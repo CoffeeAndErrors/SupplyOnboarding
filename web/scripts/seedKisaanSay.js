@@ -1,15 +1,26 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Setup Supabase Client
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://pczfoxqxkclrodzkfjpo.supabase.co';
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBjemZveHF4a2Nscm9kemtmanBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MzAyMzMsImV4cCI6MjA5NzIwNjIzM30.-2WEqptUBWi7oC0qS-PnuUejudrwOElpz-1sWCedRag';
+//
+// SERVICE ROLE, not the anon key. These scripts write catalogue data — product
+// rows, nutrition panels, screening reports with KOI scores — and that is
+// privileged work. Running them on the anon key is the reason `anon` held
+// INSERT/UPDATE/DELETE on the catalogue tables at all, which meant anyone
+// holding a publishable key could rewrite a KOI score.
+//
+// Seeding is an operator task run from a trusted machine, so it gets an
+// operator's credential.
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!SUPABASE_KEY) {
-  console.error("Missing NEXT_PUBLIC_SUPABASE_ANON_KEY. Please pass it as an env var.");
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. Pass them as env vars.");
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
 
 const BRAND_NAME = "KisaanSay";
 const BRAND_SLUG = "kisaansay";

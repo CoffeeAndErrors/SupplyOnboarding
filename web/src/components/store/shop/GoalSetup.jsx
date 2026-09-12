@@ -17,6 +17,8 @@ import { C, HEADING, BODY } from "@/components/store/landing/tokens";
 import { Grain } from "@/components/store/landing/primitives";
 import { useGoalStore, computeTargets, ACTIVITY, GOAL_DEFS } from "@/store/goalStore";
 import { FOODS_LOVE, FOODS_AVOID, DIET_TYPES, MEALS, BUDGETS, COOKING } from "@/lib/recommendation/config";
+import { useAuth } from "@/contexts/AuthContext";
+import { saveGoalProfile } from "@/lib/supabase/goalProfileService";
 
 const GOAL_ICON = { TrendingDown, Dumbbell, Scale, Sparkles };
 const DIET_TYPE_LABEL = Object.fromEntries(DIET_TYPES.map((d) => [d.key, d.label]));
@@ -248,6 +250,7 @@ function Slider({ label, value, min, max, unit, onChange }) {
 export function GoalSetupModal({ open, onClose }) {
   const profile = useGoalStore((s) => s.profile);
   const setProfile = useGoalStore((s) => s.setProfile);
+  const { user } = useAuth();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(null);
 
@@ -260,7 +263,7 @@ export function GoalSetupModal({ open, onClose }) {
       setForm({
         goal: profile?.goal || "",
         sex: profile?.sex || "male",
-        age: profile?.age || 28,
+        age: Math.max(18, profile?.age || 28),
         height: profile?.height || 172,
         weightNow: profile?.weightNow || 72,
         weightTarget: profile?.weightTarget || 68,
@@ -291,9 +294,21 @@ export function GoalSetupModal({ open, onClose }) {
   const canContinue = step !== 0 || !!form.goal;
 
   const save = () => {
+    // Local first: the profile must survive whether or not the shopper is
+    // signed in, and whether or not the write below succeeds.
     setProfile(form);
     toast.success("Your goal is set — KOI is now tuned to you");
     onClose();
+
+    // Then persist for signed-in shoppers, so the profile follows them across
+    // devices. Fire-and-forget: a failed sync must not block the UI or lose
+    // what was just saved locally.
+    if (user?.uid) {
+      const withTargets = { ...form, targets: computeTargets(form) };
+      saveGoalProfile(user.uid, withTargets).catch((err) =>
+        console.error("Could not sync goal profile:", err)
+      );
+    }
   };
 
   return (
@@ -364,7 +379,13 @@ export function GoalSetupModal({ open, onClose }) {
                   ))}
                 </div>
               </div>
-              <Slider label="Age" value={form.age} min={14} max={90} unit=" yrs" onChange={(v) => set({ age: v })} />
+              {/* 18+ only. A health profile is personal data about the person it
+                  describes, and India's DPDP Act bars KOI from profiling anyone
+                  under 18 (s.9) — the database refuses it too (00022). */}
+              <div>
+                <Slider label="Age" value={Math.max(18, form.age)} min={18} max={90} unit=" yrs" onChange={(v) => set({ age: v })} />
+                <p className="mt-1.5 text-[11.5px] font-medium text-[#083D2D]/50">KOI&apos;s health profile is for adults, 18 and over.</p>
+              </div>
               <Slider label="Height" value={form.height} min={130} max={215} unit=" cm" onChange={(v) => set({ height: v })} />
               <Slider label="Current weight" value={form.weightNow} min={35} max={160} unit=" kg" onChange={(v) => set({ weightNow: v })} />
               <Slider label="Goal weight" value={form.weightTarget} min={35} max={160} unit=" kg" onChange={(v) => set({ weightTarget: v })} />

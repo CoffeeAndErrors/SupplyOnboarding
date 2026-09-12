@@ -14,10 +14,14 @@
 import React, { useEffect, useMemo, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ShoppingBag, Leaf } from "lucide-react";
-import { fetchAllProducts } from "@/lib/data/productFetcher";
-import { FALLBACK_PRODUCTS } from "@/components/store/shop/shopData";
+import { getSeedCatalogue } from "@/components/store/shop/shopData";
+import { useCatalogue } from "@/lib/data/useCatalogue";
 import { buildProductVM } from "@/components/store/product/productData";
 import { useCartStore } from "@/store/cartStore";
+import { useGoalStore } from "@/store/goalStore";
+import { useLocation } from "@/contexts/LocationContext";
+import { useProductSupply } from "@/lib/marketplace/useProductSupply";
+import SupplyPanel from "@/components/store/product/SupplyPanel";
 import { C, HEADING } from "@/components/store/landing/tokens";
 import ProductHero from "@/components/store/product/ProductHero";
 import TrustBadge from "@/components/store/product/TrustBadge";
@@ -59,25 +63,18 @@ function TopBar() {
 export default function ProductDetailPage({ params }) {
   const { id } = use(params);
   const router = useRouter();
-  const [pool, setPool] = useState(FALLBACK_PRODUCTS);
-  const [loaded, setLoaded] = useState(false);
   const sentinel = useRef(null);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const data = await fetchAllProducts();
-        if (alive && data && data.length) {
-          setPool([...FALLBACK_PRODUCTS, ...data]);
-        }
-      } catch { /* keep fallback */ }
-      finally { if (alive) setLoaded(true); }
-    })();
-    return () => { alive = false; };
-  }, []);
+  const { products: pool, status } = useCatalogue(getSeedCatalogue);
+  const loaded = status !== "loading";
 
   const base = useMemo(() => pool.find((x) => x.id === id), [pool, id]);
+
+  // Live supply, resolved because the shopper OPENED this product. A verify
+  // costs one provider search per SKU, so nothing above this page may trigger
+  // it — not a grid, not a hover, not a shelf render.
+  const { pincode } = useLocation();
+  const goalProfile = useGoalStore((s) => s.profile);
+  const supply = useProductSupply(base, pincode, pool, goalProfile);
   const vm = useMemo(() => (base ? buildProductVM(base, pool) : null), [base, pool]);
 
   const related = useMemo(() => {
@@ -118,21 +115,37 @@ export default function ProductDetailPage({ params }) {
         <ProductHero product={vm} />
         <div ref={sentinel} aria-hidden="true" className="h-0" />
 
+        {/* Availability sits directly under the hero, above every editorial
+            section: a shopper deciding whether they can buy this should not
+            have to read the ingredient breakdown first. */}
+        <section className="mx-auto max-w-5xl px-4 pt-6 sm:px-6">
+          <SupplyPanel supply={supply} pincode={pincode} />
+        </section>
+
+        {/* A section renders only when the product has something true to put
+            in it. These used to render for every product, filled with
+            category defaults, invented reviews and stamped copy — see
+            productData.js. An absent section is the honest version. */}
         <TrustBadge trust={vm.trust} />
-        <WhyEarned reasons={vm.reasons} />
-        <Verdict verdict={vm.verdict} />
-        <IngredientIntelligence ingredients={vm.ingredients} timeline={vm.ingredientTimeline} />
+        {vm.reasons.length > 0 && <WhyEarned reasons={vm.reasons} />}
+        {vm.verdict.quote && <Verdict verdict={vm.verdict} />}
+        {vm.ingredients.length > 0 && (
+          <IngredientIntelligence ingredients={vm.ingredients} timeline={vm.ingredientTimeline} evidence={vm.ingredientsEvidence} />
+        )}
         <NutritionExplained nutrition={vm.nutrition} />
-        <HealthComparison comparison={vm.comparison} name={vm.name} />
-        <Personas personas={vm.personas} />
-        <UsageTimeline usage={vm.usage} pairings={vm.pairings} />
-        <ScientificInsights science={vm.science} />
+        {vm.comparison.length > 0 && <HealthComparison comparison={vm.comparison} name={vm.name} />}
+        {(vm.personas.for.length > 0 || vm.personas.not.length > 0) && <Personas personas={vm.personas} />}
+        {vm.usage.length > 0 && <UsageTimeline usage={vm.usage} pairings={vm.pairings} />}
+        {vm.science.length > 0 && <ScientificInsights science={vm.science} />}
         <Transparency items={vm.transparency} />
-        <Community community={vm.community} />
+        {vm.community.notes.length > 0 && <Community community={vm.community} />}
         <RelatedShelf products={related} onSelect={selectProduct} />
       </main>
 
-      <StickyBuyBar product={vm} sentinelRef={sentinel} />
+      <StickyBuyBar
+        product={{ ...vm, availability: supply.availability, deliveryEta: supply.deliveryEta }}
+        sentinelRef={sentinel}
+      />
 
       <style jsx global>{`
         @keyframes koi-float {

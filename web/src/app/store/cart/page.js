@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   ArrowLeft, 
   ShoppingBag, 
@@ -12,8 +12,15 @@ import {
   Info,
   ShieldCheck
 } from "lucide-react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useCartStore } from "@/store/cartStore";
+import { useCartStore, isDescribable } from "@/store/cartStore";
+import { averageScore, hasScore, scoredOnly } from "@/lib/score";
+import { getSeedCatalogue } from "@/components/store/shop/shopData";
+import { mergeCatalogue } from "@/lib/data/mergeCatalogue";
+import { fetchAllProducts } from "@/lib/data/productFetcher";
+import { toPer100, toPerServing } from "@/lib/nutrition/basis";
+import { isLowSugar, rowFromProduct } from "@/lib/nutrition/claims";
 
 // ─── KOI SCORE RING ───
 function KoiScore({ score, size = 32 }) {
@@ -114,80 +121,128 @@ function CartItemCard({ item }) {
 }
 
 // ─── KOI CART INSIGHTS ───
-function CartInsights() {
+// Every figure here is computed from the basket. The previous version rendered
+// literals - "Total Protein 58g", "Sugar Profile Excellent", "2 items contain
+// artificial sweeteners" - regardless of what was in the cart. It took no props
+// at all. A health brand cannot afford invented numbers, so anything the data
+// does not support is simply not shown.
+//
+// Macros are declared on the product's own basis — per 100 g for almost every
+// live row — so they are converted before anything is added up. This used to
+// sum the raw figures under a "Protein / serving" heading, which reported per
+// 100 g numbers as servings, and count "low sugar" at 5 g on whatever basis an
+// item declared, drinks included. Nothing is multiplied by quantity: a basket
+// total would need servings-per-pack, which the cart item shape does not carry.
+const proteinInServing = (item) => {
+  const v = toPerServing(rowFromProduct(item)).protein_g;
+  return Number.isFinite(Number(v)) && v !== null ? Number(v) : null;
+};
+const sugarDeclared = (item) => {
+  const v = toPer100(rowFromProduct(item)).sugars_g;
+  return v !== null && Number.isFinite(Number(v));
+};
+
+function CartInsights({ items }) {
+  // The average and the count it is "across" must come from the SAME set, or
+  // the caption misdescribes the number sitting above it. averageScore() drops
+  // unscored items internally, so the count has to drop them the same way.
+  const scored = scoredOnly(items);
+  const avgScore = averageScore(items);
+
+  const proteins = items.map(proteinInServing).filter((v) => v !== null);
+  const proteinPerServing = proteins.length
+    ? Math.round(proteins.reduce((s, v) => s + v, 0))
+    : null;
+
+  // Counted over items whose sugar KOI can place on a basis, and judged by the
+  // regulated low-sugar rule rather than a flat 5.
+  const sugars = items.filter(sugarDeclared);
+  const lowSugarCount = sugars.filter((i) => isLowSugar(rowFromProduct(i))).length;
+
+  // Nothing measurable in the basket - say nothing rather than fill the space.
+  if (avgScore === null && proteinPerServing === null && !sugars.length) return null;
+
   return (
     <div className="bg-[#0E4032] text-white rounded-2xl p-5 shadow-[0_8px_30px_rgba(14,64,50,0.15)] relative overflow-hidden my-6">
       <div className="absolute top-0 right-0 w-48 h-48 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/3 blur-3xl pointer-events-none" />
-      
+
       <div className="flex items-center gap-2.5 mb-5 relative z-10">
          <Sparkles className="w-5 h-5 text-[#C8F23E]" />
          <h3 className="text-[17px] font-bold text-white tracking-wide" style={{ fontFamily: "var(--font-koi-heading)" }}>KOI Cart Insights</h3>
       </div>
-      
+
       <div className="grid grid-cols-2 gap-3 relative z-10">
-         <div className="flex flex-col bg-white/10 rounded-xl p-3 border border-white/5">
-            <span className="text-[12px] font-medium text-white/70 uppercase tracking-wider mb-1">Total Protein</span>
-            <span className="text-[16px] font-bold text-[#C8F23E]">58g</span>
-         </div>
-         <div className="flex flex-col bg-white/10 rounded-xl p-3 border border-white/5">
-            <span className="text-[12px] font-medium text-white/70 uppercase tracking-wider mb-1">Sugar Profile</span>
-            <span className="text-[16px] font-bold text-[#C8F23E]">Excellent</span>
-         </div>
-      </div>
-      
-      <div className="mt-4 p-3 rounded-xl bg-[#B8860B]/20 border border-[#B8860B]/30 flex gap-2.5 items-start relative z-10">
-         <Info className="w-4 h-4 text-[#C8F23E] shrink-0 mt-0.5" />
-         <p className="text-[12px] text-white/90 leading-relaxed font-medium">
-            <span className="text-[#C8F23E] font-bold">Watchout:</span> 2 items contain artificial sweeteners.
-         </p>
+         {proteinPerServing !== null && (
+           <div className="flex flex-col bg-white/10 rounded-xl p-3 border border-white/5">
+              <span className="text-[12px] font-medium text-white/70 uppercase tracking-wider mb-1">Protein</span>
+              <span className="text-[16px] font-bold text-[#C8F23E]">{proteinPerServing}g</span>
+              <span className="text-[10px] text-white/50 mt-0.5">one serving each of {proteins.length} item{proteins.length === 1 ? "" : "s"}</span>
+           </div>
+         )}
+         {sugars.length > 0 && (
+           <div className="flex flex-col bg-white/10 rounded-xl p-3 border border-white/5">
+              <span className="text-[12px] font-medium text-white/70 uppercase tracking-wider mb-1">Low sugar</span>
+              <span className="text-[16px] font-bold text-[#C8F23E]">{lowSugarCount} of {sugars.length}</span>
+              <span className="text-[10px] text-white/50 mt-0.5">5g or less per 100g · 2.5g per 100ml</span>
+           </div>
+         )}
+         {avgScore !== null && (
+           <div className="flex flex-col bg-white/10 rounded-xl p-3 border border-white/5">
+              <span className="text-[12px] font-medium text-white/70 uppercase tracking-wider mb-1">Avg KOI score</span>
+              <span className="text-[16px] font-bold text-[#C8F23E]">{avgScore}</span>
+              <span className="text-[10px] text-white/50 mt-0.5">across {scored.length} scored item{scored.length === 1 ? "" : "s"}</span>
+           </div>
+         )}
       </div>
     </div>
   )
 }
 
 // ─── RECOMMENDED ADD-ONS ───
-const RECOMMENDED_ADDONS = [
-  {
-    id: 101,
-    brand: "THE WHOLE TRUTH",
-    name: "Dark Chocolate Peanut Butter",
-    price: 349,
-    weight: "350g",
-    score: 89,
-  },
-  {
-    id: 102,
-    brand: "YOGABAR",
-    name: "Oats & Seeds Crunch",
-    price: 199,
-    weight: "400g",
-    score: 91,
-  },
-  {
-    id: 103,
-    brand: "BORÉCHA",
-    name: "Kombucha - Mixed Berry",
-    price: 180,
-    weight: "330ml",
-    score: 88,
-  }
-];
-
-function RecommendedAddons() {
+// Drawn from KOI's own catalogue. This previously listed three invented
+// products attributed to real third-party brands - The Whole Truth, Yogabar,
+// Borecha - each stamped with a KOI score (89/91/88) that was never awarded.
+// Publishing a verification verdict about a product KOI has not screened is
+// the same defect as inventing a nutrition value, pointed at someone else.
+function RecommendedAddons({ items }) {
   const addToCart = useCartStore(state => state.addToCart);
+  const [pool, setPool] = useState(getSeedCatalogue);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await fetchAllProducts();
+        if (alive && data && data.length) setPool(mergeCatalogue(getSeedCatalogue(), data));
+      } catch { /* keep whatever the seed gave us */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const inCart = new Set(items.map((i) => String(i.id)));
+  const suggestions = pool
+    .filter((p) => !inCart.has(String(p.id)) && hasScore(p.score))
+    .sort((a, b) => Number(b.score) - Number(a.score))
+    .slice(0, 6);
+
+  if (!suggestions.length) return null;
 
   return (
     <div className="mb-8">
        <div className="mb-4">
           <h3 className="text-xl font-bold text-[#0E4032]" style={{ fontFamily: "var(--font-koi-heading)" }}>Complete Your Basket</h3>
-          <p className="text-[13px] font-medium text-[#5A6B5A]">Pairs well with your selected products</p>
+          <p className="text-[13px] font-medium text-[#5A6B5A]">Highest-scoring products you haven&apos;t added yet</p>
        </div>
-       
+
        <div className="flex overflow-x-auto hide-scrollbar gap-4 pb-4 -mx-4 px-4 md:mx-0 md:px-0">
-          {RECOMMENDED_ADDONS.map(product => (
+          {suggestions.map(product => (
              <div key={product.id} className="w-[160px] md:w-[180px] shrink-0 bg-white border border-[#E2E8D8] rounded-2xl overflow-hidden flex flex-col p-3 shadow-sm hover:shadow-md transition-shadow group">
                 <div className="w-full aspect-square bg-gradient-to-br from-[#F2F6EC] to-[#E8EFE0] rounded-xl flex items-center justify-center mb-3 relative overflow-hidden">
-                   <Leaf className="w-8 h-8 text-[#0E4032]/20" />
+                   {product.image?.hero ? (
+                     <Image src={product.image.hero} alt="" fill sizes="180px" className="object-contain p-2" style={{ mixBlendMode: "multiply" }} />
+                   ) : (
+                     <Leaf className="w-8 h-8 text-[#0E4032]/20" />
+                   )}
                    <div className="absolute top-2 left-2 scale-90">
                      <KoiScore score={product.score} size={28} />
                    </div>
@@ -198,7 +253,7 @@ function RecommendedAddons() {
                 <div className="mt-auto flex items-center justify-between pt-2 border-t border-[#E2E8D8]">
                    <span className="text-[14px] font-bold text-[#0E4032]">₹{product.price}</span>
                    <button 
-                     onClick={() => addToCart({ ...product, quantity: 1, tags: [], dietary: [] })}
+                     onClick={() => addToCart(product)}
                      className="w-7 h-7 rounded-full bg-[#F2F6EC] hover:bg-[#0E4032] hover:text-white text-[#0E4032] flex items-center justify-center transition-colors border border-[#E2E8D8] group-hover:border-[#0E4032]"
                    >
                      <Plus className="w-3.5 h-3.5" />
@@ -253,19 +308,24 @@ function OrderSummary({ subtotal, router }) {
 // ─── MAIN CART PAGE ───
 export default function CartPage() {
   const router = useRouter();
-  const [mounted, setMounted] = useState(false);
-  
-  // Hydration fix for Zustand
-  useEffect(() => {
-    const t = setTimeout(() => setMounted(true), 0);
-    return () => clearTimeout(t);
-  }, []);
 
-  const items = useCartStore(state => state.items);
+  // The cart is restored by CartHydrator in the store layout. Waiting on
+  // `hydrated` avoids flashing "your cart is empty" at someone whose basket
+  // is still being read back from storage.
+  const lines = useCartStore(state => state.items);
+  const hydrated = useCartStore(state => state.hydrated);
+  const resolved = useCartStore(state => state.resolved);
+
+  // Only lines the storefront can name and price. An unresolved line is real
+  // and stays in the basket; it just cannot be drawn yet.
+  const items = useMemo(() => lines.filter(isDescribable), [lines]);
   const totalItems = items.reduce((sum, i) => sum + i.quantity, 0);
-  const subtotal = items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+  const subtotal = items.reduce((sum, i) => sum + (Number(i.price) || 0) * i.quantity, 0);
 
-  if (!mounted) return null;
+  if (!hydrated) return null;
+  // The basket has contents the catalogue has not described yet. Showing
+  // "your cart is empty" here would be a lie the shopper might act on.
+  if (!resolved && lines.length > 0) return null;
 
   // ─── EMPTY STATE ───
   if (totalItems === 0) {
@@ -309,9 +369,9 @@ export default function CartPage() {
                ))}
              </div>
 
-             <CartInsights />
-             
-             <RecommendedAddons />
+             <CartInsights items={items} />
+
+             <RecommendedAddons items={items} />
           </div>
 
           {/* RIGHT COLUMN: Desktop Summary */}

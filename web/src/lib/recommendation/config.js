@@ -6,6 +6,23 @@
 // onboarding UI so everything lines up deterministically.
 // ============================================================================
 
+// ── Supply availability ──
+// Tri-state, because "we have not checked" is a real and common answer and is
+// NOT the same as "in stock". Treating absence of evidence as evidence of
+// stock is the availability version of inventing a nutrition value.
+//
+// `unknown` is the default and must be CONSTRUCTED, never inferred. It is not
+// a reason to hide a screened product - only a reason to make no claim about
+// its availability, price or delivery.
+//
+// Shared with lib/availability.js (presentation) and, when the supply tier
+// lands, a CHECK constraint in the migration. Change here, change all three.
+export const AVAILABILITY = Object.freeze({
+  AVAILABLE: "available",
+  UNAVAILABLE: "unavailable",
+  UNKNOWN: "unknown",
+});
+
 // ── Scoring weights (max additive = 100) ──
 export const WEIGHTS = Object.freeze({
   goalMatch: 35,
@@ -20,19 +37,61 @@ export const WEIGHTS = Object.freeze({
 // ── Penalties (documented, deterministic) ──
 export const PENALTIES = Object.freeze({
   avoidedIngredient: -100, // a soft-avoided attribute is present → effectively excluded
+  // The shopper avoids something KOI cannot check on this product.
+  //
+  // Two avoid flags are derived from macros rather than ingredient keywords —
+  // refined_sugar from sugars_g, high_sodium from sodium_mg — so where that
+  // figure is undeclared, the ABSENCE of the flag proves nothing. Scoring such
+  // a product as clean is how a missing number became a clean bill of health;
+  // scoring it as -100 would assert the flag is present, which is the same
+  // error pointed the other way.
+  //
+  // So it sits between: enough that a product declaring a clean figure
+  // outranks an identical one that declares nothing, never enough to exclude a
+  // screened product over a gap in KOI's own data. Sized against
+  // proteinBelowThreshold (-15), a comparable "this is a real mark against it"
+  // signal, rather than against the exclusion.
+  unverifiableAvoid: -15,
   lowStock: -10,
   highSugarForFatLoss: -20,
   proteinBelowThreshold: -15,
   highSodium: -10,
 });
 
-// ── Nutrition thresholds (per serving, grams unless noted) ──
+// The value a scoring component takes where KOI holds no evidence either way.
+//
+// Not 0 — that punishes a screened product for a gap in KOI's own data. Not 1 —
+// that lets a missing nutrition panel outrank a good one, which is how this
+// engine used to behave when an undeclared macro was read as zero. Components
+// shrink toward this in proportion to how much of their input is undeclared,
+// so a fully declared good product always outranks a half-declared one, and
+// uncertainty pulls a score toward the middle from whichever side it started.
+export const UNKNOWN_FIT = 0.5;
+
+// ── Nutrition thresholds (grams unless noted) ──
+//
+// These are compared against PER-100 figures, not per-serving ones - this
+// comment used to say the opposite and it misled every reader of it.
+// `sku_nutrition` declares `per_100g` for almost every live row, resolveIntent
+// pins numeric search to LIMIT_BASIS = 'per_100g', and shelves.js and the KRE
+// all read that same column. `proteinPerServingFloor` is the sole exception and
+// says so in its name.
 export const THRESHOLDS = Object.freeze({
-  proteinHigh: 12,
+  proteinHigh: 12, // per 100 g/ml: dense enough for the claim to mean something
   proteinMin: 6, // below this, protein-focused goals penalise
-  sugarLow: 4,
+  // Density alone is not a claim. A per-100 g figure says nothing about what a
+  // shopper actually eats, which is how "High Protein" reached a 0.1 g serving
+  // of saffron - 11.4 g per 100 g, about 0.01 g per pinch. A claim has to
+  // survive contact with the declared serving too. 5 g is the FDA "good source
+  // of protein" bar (10% DV), applied per serving rather than per 100 g.
+  proteinPerServingFloor: 5,
+  // sugarLow and fibreHigh are FSSAI Schedule I's figures for solids, and they
+  // double as scoring scales. Whether a product may be CALLED low in sugar or
+  // high in fibre is decided only by lib/nutrition/claims.js, which also knows
+  // a drink's low-sugar limit is 2.5 g per 100 ml and fibre's per-100-kcal route.
+  sugarLow: 5,
   sugarHigh: 10,
-  fibreHigh: 5,
+  fibreHigh: 6,
   kcalLow: 120,
   kcalHigh: 170,
   sodiumHighMg: 400,
@@ -87,29 +146,41 @@ export const FOODS_LOVE = [
   { key: "muesli", label: "Muesli", emoji: "🥣", keywords: ["muesli"] },
   { key: "honey", label: "Honey", emoji: "🍯", keywords: ["honey"] },
   { key: "smoothies", label: "Smoothies", emoji: "🥤", keywords: ["smoothie", "shake"] },
-  { key: "healthy_desserts", label: "Healthy Desserts", emoji: "🍮", keywords: ["dessert", "laddu", "halwa"] },
+  // Key unchanged (food_item has it); the label was KOI calling a category
+  // "healthy", which the claims regulations do not allow.
+  { key: "healthy_desserts", label: "Desserts", emoji: "🍮", keywords: ["dessert", "laddu", "halwa"] },
 ];
 
-// avoid key → { flag, mode, label }. hard = eligibility removal, soft = penalty.
+// avoid key → { flag, mode, kind, label }. hard = eligibility removal, soft = penalty.
+//
+// `kind` mirrors `avoided_item.kind` in the database, and it is what decides
+// whether an absence can be asserted. An `allergen` is a promise about what is
+// NOT in the food, which only a complete ingredient list a person has checked
+// can keep — a partial list, a product name or a tag cannot. `ingredient` and
+// `attribute` are preferences and are scored on the evidence there is.
+//
+// Adding a key here needs a matching `avoided_item` row (user_avoided_food has a
+// foreign key to it) — see migration 00021 for tree nuts.
 export const FOODS_AVOID = [
-  { key: "peanuts", label: "Peanuts", emoji: "🥜", flag: "peanut", mode: "hard" },
-  { key: "soy", label: "Soy", emoji: "🫛", flag: "soy", mode: "hard" },
-  { key: "gluten", label: "Gluten", emoji: "🌾", flag: "gluten", mode: "hard" },
-  { key: "milk", label: "Milk", emoji: "🥛", flag: "dairy", mode: "hard" },
-  { key: "lactose", label: "Lactose", emoji: "🥛", flag: "dairy", mode: "hard" },
-  { key: "eggs", label: "Eggs", emoji: "🥚", flag: "egg", mode: "hard" },
-  { key: "fish", label: "Fish", emoji: "🐟", flag: "fish", mode: "hard" },
-  { key: "shellfish", label: "Shellfish", emoji: "🦐", flag: "shellfish", mode: "hard" },
-  { key: "red_meat", label: "Red Meat", emoji: "🥩", flag: "meat", mode: "hard" },
-  { key: "caffeine", label: "Caffeine", emoji: "☕", flag: "caffeine", mode: "hard" },
-  { key: "artificial_sweeteners", label: "Artificial Sweeteners", emoji: "🧪", flag: "artificial_sweetener", mode: "soft" },
-  { key: "palm_oil", label: "Palm Oil", emoji: "🌴", flag: "palm_oil", mode: "soft" },
-  { key: "refined_sugar", label: "Refined Sugar", emoji: "🍬", flag: "refined_sugar", mode: "soft" },
-  { key: "high_sodium", label: "High Sodium", emoji: "🧂", flag: "high_sodium", mode: "soft" },
-  { key: "preservatives", label: "Preservatives", emoji: "🧪", flag: "preservatives", mode: "soft" },
-  { key: "artificial_colours", label: "Artificial Colours", emoji: "🎨", flag: "artificial_colour", mode: "soft" },
-  { key: "artificial_flavours", label: "Artificial Flavours", emoji: "🧪", flag: "artificial_flavour", mode: "soft" },
-  { key: "spicy", label: "Spicy Food", emoji: "🌶️", flag: "spicy", mode: "soft" },
+  { key: "peanuts", label: "Peanuts", emoji: "🥜", flag: "peanut", kind: "allergen", mode: "hard" },
+  { key: "tree_nuts", label: "Tree Nuts", emoji: "🌰", flag: "tree_nut", kind: "allergen", mode: "hard" },
+  { key: "soy", label: "Soy", emoji: "🫛", flag: "soy", kind: "allergen", mode: "hard" },
+  { key: "gluten", label: "Gluten", emoji: "🌾", flag: "gluten", kind: "allergen", mode: "hard" },
+  { key: "milk", label: "Milk", emoji: "🥛", flag: "dairy", kind: "allergen", mode: "hard" },
+  { key: "lactose", label: "Lactose", emoji: "🥛", flag: "dairy", kind: "allergen", mode: "hard" },
+  { key: "eggs", label: "Eggs", emoji: "🥚", flag: "egg", kind: "allergen", mode: "hard" },
+  { key: "fish", label: "Fish", emoji: "🐟", flag: "fish", kind: "allergen", mode: "hard" },
+  { key: "shellfish", label: "Shellfish", emoji: "🦐", flag: "shellfish", kind: "allergen", mode: "hard" },
+  { key: "red_meat", label: "Red Meat", emoji: "🥩", flag: "meat", kind: "ingredient", mode: "hard" },
+  { key: "caffeine", label: "Caffeine", emoji: "☕", flag: "caffeine", kind: "ingredient", mode: "hard" },
+  { key: "artificial_sweeteners", label: "Artificial Sweeteners", emoji: "🧪", flag: "artificial_sweetener", kind: "attribute", mode: "soft" },
+  { key: "palm_oil", label: "Palm Oil", emoji: "🌴", flag: "palm_oil", kind: "ingredient", mode: "soft" },
+  { key: "refined_sugar", label: "Refined Sugar", emoji: "🍬", flag: "refined_sugar", kind: "attribute", mode: "soft" },
+  { key: "high_sodium", label: "High Sodium", emoji: "🧂", flag: "high_sodium", kind: "attribute", mode: "soft" },
+  { key: "preservatives", label: "Preservatives", emoji: "🧪", flag: "preservatives", kind: "attribute", mode: "soft" },
+  { key: "artificial_colours", label: "Artificial Colours", emoji: "🎨", flag: "artificial_colour", kind: "attribute", mode: "soft" },
+  { key: "artificial_flavours", label: "Artificial Flavours", emoji: "🧪", flag: "artificial_flavour", kind: "attribute", mode: "soft" },
+  { key: "spicy", label: "Spicy Food", emoji: "🌶️", flag: "spicy", kind: "attribute", mode: "soft" },
 ];
 
 export const DIET_TYPES = [
@@ -154,13 +225,30 @@ export const CONTAINS_KEYWORDS = Object.freeze({
   fish: ["fish", "tuna", "salmon", "anchovy"],
   shellfish: ["prawn", "shrimp", "crab", "lobster", "shellfish"],
   peanut: ["peanut", "groundnut"],
-  tree_nut: ["almond", "cashew", "walnut", "hazelnut", "pistachio"],
+  // Hindi names too, because Indian labels print them ("kaju", "badam"), and
+  // "dry fruit" because a dry-fruit mix almost always carries almonds or
+  // cashews. Over-detection only ever removes a product for a shopper who
+  // avoids tree nuts; under-detection is the failure that matters.
+  tree_nut: [
+    "almond", "cashew", "walnut", "hazelnut", "pistachio", "pecan", "macadamia",
+    "brazil nut", "pine nut", "chilgoza", "marzipan", "badam", "kaju", "akhrot",
+    "pista", "dry fruit", "dryfruit",
+  ],
   soy: ["soy", "soya", "tofu"],
   gluten: ["wheat", "maida", "bread", "pasta", "gluten", "barley", "rava", "suji"],
   honey: ["honey"],
   caffeine: ["coffee", "tea", "caffeine", "espresso"],
   spicy: ["madras", "spicy", "chilli", "chili", "masala", "mixture", "chivda", "peri"],
   palm_oil: ["palm oil", "palmolein"],
+  // What a Jain diet excludes beyond meat, fish and egg: vegetables that grow
+  // underground. Ginger is on the list although some Jains accept it dried —
+  // a hard diet rule errs toward excluding. Hindi names for the same reason
+  // tree_nut carries them.
+  root_veg: [
+    "onion", "garlic", "potato", "carrot", "beetroot", "radish", "turnip",
+    "sweet potato", "yam", "ginger", "shallot", "aloo", "pyaz", "pyaaz",
+    "lahsun", "lehsun", "mooli", "arbi",
+  ],
 });
 
 // "Free-from" tag signals that CLEAR a flag even if a keyword appears.
@@ -174,14 +262,27 @@ export const CLEAR_TAGS = Object.freeze({
 });
 
 // dietType → contains-flags to exclude
+//
+// Jain used to be identical to vegetarian, which recommended potato chips and
+// honey to a Jain shopper. Jainism excludes both: root vegetables, and honey.
 export const DIET_EXCLUSIONS = Object.freeze({
   vegan: ["dairy", "egg", "meat", "fish", "shellfish", "honey"],
   vegetarian: ["meat", "fish", "shellfish", "egg"],
   eggetarian: ["meat", "fish", "shellfish"],
-  jain: ["meat", "fish", "shellfish", "egg"],
+  jain: ["meat", "fish", "shellfish", "egg", "honey", "root_veg"],
   pescatarian: ["meat"],
   non_vegetarian: [],
 });
+
+// Diets that can only be confirmed from a complete ingredient list.
+//
+// Vegetarian is not here, and that is deliberate: FSSAI makes the green/brown
+// veg mark mandatory on every pack, so vegetarian status is declared by law on
+// the label itself. Nothing marks a pack vegan or Jain. "Spices" on a partial
+// list can hide garlic, and "milk solids" can be missing from one entirely, so
+// without a verified list — or the brand's own declaration — KOI says the diet
+// is not verified rather than implying it fits.
+export const LABEL_VERIFIED_DIETS = Object.freeze(["vegan", "jain"]);
 
 // meal → matching categories / keywords
 export const MEAL_MATCH = Object.freeze({
