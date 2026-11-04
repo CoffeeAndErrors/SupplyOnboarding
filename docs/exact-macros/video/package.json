@@ -1,0 +1,22 @@
+{
+  "name": "koi-founder-video",
+  "private": true,
+  "type": "module",
+  "description": "A short video of KOI's new UI and the KOI agent, for the founder. Footage is captured from the demo app (capture.mjs); the film is composed with Remotion (src/).",
+  "scripts": {
+    "capture": "node capture.mjs",
+    "studio": "remotion studio src/index.jsx",
+    "stills": "node stills.mjs",
+    "render": "remotion render src/index.jsx KoiWhatsNew out/koi-whats-new.mp4 --codec h264 --crf 18 --image-format png --color-space bt709 --pixel-format yuv420p"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.540",
+    "@remotion/google-fonts": "^4.0.540",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "remotion": "^4.0.540"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}
