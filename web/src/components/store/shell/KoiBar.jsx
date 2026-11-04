@@ -51,7 +51,9 @@ export function KoiSubtitle({ className = "" }) {
     return () => clearTimeout(timer);
   }, [line, key]);
   return (
-    <div data-koi-line className={`grid transition-[grid-template-rows,opacity] duration-500 ${showing ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"} ${className}`}>
+    // Hidden, the line still overhangs its 0fr row (.ka-line aligns to the baseline, so it
+    // isn't squeezed): it must not take the clicks meant for the input and send button beneath.
+    <div data-koi-line className={`grid transition-[grid-template-rows,opacity] duration-500 ${showing ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"} ${className}`}>
       <p ref={ref} aria-live="polite" className="m-0 min-h-0 overflow-hidden text-left text-[15px] font-medium leading-[1.45] text-koi-ink md:text-[16px]">
         <span className="block pb-0.5 pt-3">
           {line.split(" ").filter(Boolean).map((w, i) => (
