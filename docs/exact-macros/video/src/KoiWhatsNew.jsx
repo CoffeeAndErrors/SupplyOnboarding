@@ -1,21 +1,24 @@
 // ============================================================================
-// "What's new in KOI": the film. A cream stage, a caption band in the brand's
-// type, and the real store in a card beneath it, the camera easing in on what
-// matters. The cursor is drawn here from the recorded moves, since a headless
+// "What's new in KOI": the film. A cream stage. Above the card, the chapter
+// title on a lime highlighter. In the card, the real store, the camera easing
+// in on what matters. Under it, a dark subtitle saying what's happening, step
+// by step. The cursor is drawn here from the recorded moves, since a headless
 // screen recording has none. Opens and closes on forest.
 // ============================================================================
 import { AbsoluteFill, Easing, Img, Sequence, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { CLIPS } from "./clips";
-import { CAPTIONS, CAPTION_SPANS, FPS, TIMELINE, cameraAt, cursorAt, frameAt, sourceAt } from "./edit";
+import { CAPTIONS, CAPTION_SPANS, FPS, TIMELINE, cameraAt, cursorAt, frameAt, shotSecondOf, sourceAt, subtitleAt } from "./edit";
 import { DISPLAY, MONO, SANS } from "./fonts";
 
-const C = { forest: "#083d2d", lime: "#ddf247", bg: "#f6f5f1", ink: "#1c1e17", ink2: "#4b4f45", ember: "#e8743b" };
-const CARD = { x: 256, y: 178, w: 1408, h: 880 };
+const C = { forest: "#083d2d", lime: "#ddf247", bg: "#f6f5f1", ink: "#1c1e17", ember: "#e8743b" };
+const CARD = { x: 320, y: 150, w: 1280, h: 800 };
+const SUB_TOP = CARD.y + CARD.h + 26;
 const S = CARD.w / 1440; // card pixels per page pixel at zoom 1
 
 export function KoiWhatsNew() {
   const intro = TIMELINE.find((s) => s.kind === "intro");
   const outro = TIMELINE.find((s) => s.kind === "outro");
+  const shots = TIMELINE.filter((s) => s.clip);
   return (
     <AbsoluteFill style={{ background: C.bg }}>
       <div
@@ -24,12 +27,17 @@ export function KoiWhatsNew() {
           background: "#fff", boxShadow: "0 50px 90px -46px rgba(8,61,45,.55), 0 0 0 1px rgba(8,61,45,.09)",
         }}
       >
-        {TIMELINE.filter((s) => s.clip).map((s) => (
+        {shots.map((s) => (
           <Sequence key={s.index} from={s.from} durationInFrames={s.frames + s.tail} layout="absolute-fill">
             <Shot shot={s} />
           </Sequence>
         ))}
       </div>
+      {shots.map((s) => (
+        <Sequence key={`sub-${s.index}`} from={s.from} durationInFrames={s.frames} layout="absolute-fill">
+          <Subtitle shot={s} />
+        </Sequence>
+      ))}
       {CAPTION_SPANS.map((span) => (
         <Sequence key={`${span.cap}-${span.from}`} from={span.from} durationInFrames={span.frames} layout="absolute-fill">
           <Caption cap={CAPTIONS[span.cap]} frames={span.frames} />
@@ -52,7 +60,7 @@ function Shot({ shot }) {
   const t = Math.min(frame, shot.frames) / FPS;
   const src = sourceAt(shot.seg, t);
   const i = frameAt(clip.frames, src);
-  const cam = cameraAt(shot.cam, t);
+  const cam = cameraAt(shot.cam, src);
   const scale = S * cam.z;
   const left = CARD.w / 2 - cam.x * scale;
   const top = CARD.h / 2 - cam.y * scale;
@@ -92,23 +100,51 @@ function Cursor({ x, y, show, ripple, z }) {
   );
 }
 
-// ── The caption band ────────────────────────────────────────────────────────
+// ── The subtitle under the card: what's happening, step by step ─────────────
+function Subtitle({ shot }) {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const t = Math.min(frame, shot.frames) / FPS;
+  const now = subtitleAt(shot.sub, sourceAt(shot.seg, t));
+  if (!now) return null;
+  const since = frame - Math.round(shotSecondOf(shot.seg, now.s) * FPS);
+  const p = spring({ frame: since, fps, config: { damping: 200 }, durationInFrames: 12 });
+  const out = interpolate(frame, [shot.frames - 6, shot.frames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  return (
+    <div style={{ position: "absolute", left: 0, right: 0, top: SUB_TOP, display: "flex", justifyContent: "center", opacity: out }}>
+      <div
+        key={now.i}
+        style={{
+          ...SANS, display: "flex", alignItems: "center", gap: 16, maxWidth: 1500, padding: "15px 30px 15px 22px", borderRadius: 999,
+          background: C.forest, color: C.bg, fontSize: 31, fontWeight: 600, lineHeight: 1.2, letterSpacing: "-0.005em",
+          boxShadow: "0 18px 40px -22px rgba(8,61,45,.7)", opacity: p, transform: `translateY(${(1 - p) * 12}px)`,
+        }}
+      >
+        <span style={{ width: 14, height: 14, borderRadius: "50%", background: C.lime, flexShrink: 0 }} />
+        {now.text}
+      </div>
+    </div>
+  );
+}
+
+// ── The chapter title above the card, on a lime highlighter ─────────────────
 function Caption({ cap, frames }) {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
   const rise = (delay) => spring({ frame: f - delay, fps, config: { damping: 200 }, durationInFrames: 16 });
   const out = interpolate(f, [frames - 7, frames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const eyebrow = rise(0);
-  const line = rise(9);
+  const mark = rise(6);
   return (
-    <div style={{ position: "absolute", left: CARD.x, top: 34, width: CARD.w, height: 128, opacity: out, display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 48 }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
-        <div style={{ ...MONO, fontWeight: 600, fontSize: 17, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(8,61,45,.66)", opacity: eyebrow, transform: `translateY(${(1 - eyebrow) * 8}px)` }}>
-          <span style={{ color: C.ember }}>{cap.n}</span>
-          <span style={{ margin: "0 0.7em" }}>·</span>
-          {cap.eyebrow}
-        </div>
-        <div style={{ ...DISPLAY, fontSize: 62, lineHeight: 0.95, color: C.forest, whiteSpace: "nowrap" }}>
+    <div style={{ position: "absolute", left: CARD.x, top: 26, width: CARD.w, opacity: out, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ ...MONO, fontWeight: 600, fontSize: 18, letterSpacing: "0.2em", textTransform: "uppercase", color: C.ember, opacity: eyebrow, transform: `translateY(${(1 - eyebrow) * 8}px)` }}>
+        {cap.n}
+        <span style={{ margin: "0 0.7em", color: "rgba(8,61,45,.45)" }}>·</span>
+        <span style={{ color: "rgba(8,61,45,.75)" }}>{cap.eyebrow}</span>
+      </div>
+      <div style={{ position: "relative", alignSelf: "flex-start" }}>
+        <div style={{ position: "absolute", left: -10, right: -12, top: "34%", bottom: "-6%", background: C.lime, borderRadius: 6, transformOrigin: "left", transform: `scaleX(${mark})` }} />
+        <div style={{ ...DISPLAY, position: "relative", fontSize: 64, lineHeight: 1, color: C.forest, whiteSpace: "nowrap" }}>
           {cap.title.split(" ").map((w, i) => {
             const p = rise(3 + i * 2);
             return (
@@ -119,9 +155,6 @@ function Caption({ cap, frames }) {
           })}
         </div>
       </div>
-      <p style={{ ...SANS, margin: 0, marginBottom: 4, maxWidth: 470, fontSize: 21, fontWeight: 500, lineHeight: 1.4, color: C.ink2, textAlign: "right", opacity: line, transform: `translateY(${(1 - line) * 10}px)` }}>
-        {cap.line}
-      </p>
     </div>
   );
 }
