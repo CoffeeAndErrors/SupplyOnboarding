@@ -84,7 +84,7 @@ test("a plan that can't fit is discarded, the owner is told why in plain words, 
   assert.equal(plainReason(new Error("TypeError: x is undefined")), "Something went wrong while planning.");
 });
 
-test("reminders go out in the hour they're due, once, for today's occurrences only", async () => {
+test("the daily run sends every reminder that falls today, once, and nothing for other days", async () => {
   const household = { id: "h1", owner_id: "owner-h1" };
   const db = fakeDb({
     calendar_event: [
@@ -96,6 +96,10 @@ test("reminders go out in the hour they're due, once, for today's occurrences on
   });
   const sent = [];
   const n = await runReminders({ db, now: NOW, notify: async (_db, x) => { sent.push(x); return {}; } });
-  assert.equal(n, 1);
-  assert.deepEqual(sent.map((x) => [x.kind, x.ref]), [["plan_day", "event:e1:2026-10-25"]], "6:30 pm today, inside the hour; 7:30 pm later; Saturday's shop isn't today; 9 am was earlier");
+  assert.equal(n, 3);
+  assert.deepEqual(
+    sent.map((x) => [x.kind, x.ref]),
+    [["plan_day", "event:e1:2026-10-25"], ["reminder", "event:e2:2026-10-25"], ["reminder", "event:e4:2026-10-25"]],
+    "today's plan day and both of today's reminders, whatever their time; Saturday's shop isn't today",
+  );
 });

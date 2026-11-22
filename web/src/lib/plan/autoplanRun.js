@@ -1,13 +1,15 @@
 // ============================================================================
-// One run of the hourly auto-plan job, with its parts passed in (the route,
-// /api/engine/autoplan, passes the real ones; the tests pass fakes).
+// One run of the daily auto-plan job (9 am IST, web/vercel.json), with its
+// parts passed in (the route, /api/engine/autoplan, passes the real ones; the
+// tests pass fakes). Daily because Vercel Hobby allows daily crons only.
 //
 //   runAutoplan   each job whose run has come: plan for that household as its
 //                 owner would, keep the plan as a DRAFT starting on the day the
 //                 rules say, tell the owner, set the next run. A plan the
 //                 planner can't fit is discarded and the owner is told why.
-//   runReminders  the Calendar's reminders, planning and shopping days whose
-//                 time came in the hour just gone, sent once each.
+//                 A job set for 6 pm is drafted at the next morning's run.
+//   runReminders  the Calendar's reminders, planning and shopping days that
+//                 fall today, sent once each as the morning's notice.
 //
 // Every read and write names the household it is for: the database client may
 // be the service role (00093), so the scoping is this code's job.
@@ -17,10 +19,8 @@ import { nextRunAt, startsOnFor, rulesOf } from "./autoplan";
 import { datesOf } from "@/lib/calendar/events";
 
 export const RUN_RULES = Object.freeze({
-  /** Households a run: the planner takes seconds each; the next hour picks up the rest. */
-  perRun: 3,
-  /** A reminder with no time of its own goes at 9 am. */
-  defaultMinutes: 9 * 60,
+  /** Households a run: the planner takes seconds each and the route has 60 s; the next day picks up the rest. */
+  perRun: 8,
 });
 const IST = 330 * 60000;
 const REMIND_KINDS = Object.freeze({ remind: "reminder", plan: "plan_day", shop: "shop_day" });
@@ -102,7 +102,6 @@ export async function runAutoplan({ db, now, planFor, notify }) {
 export async function runReminders({ db, now, notify }) {
   const local = new Date(now.getTime() + IST);
   const today = local.toISOString().slice(0, 10);
-  const minutes = local.getUTCHours() * 60 + local.getUTCMinutes();
   const { data: events, error } = await db
     .from("calendar_event")
     .select("id, kind, title, starts_on, ends_on, repeat_days, until, at_time, household:household_id(id, owner_id)")
@@ -111,11 +110,8 @@ export async function runReminders({ db, now, notify }) {
   if (error) throw error;
   let sent = 0;
   for (const e of events ?? []) {
+    // Once a day, so everything falling today goes in the morning run; ref keeps it to once.
     if (!e.household?.owner_id || !datesOf(e, today, today).length) continue;
-    const [h, m] = e.at_time ? String(e.at_time).split(":").map(Number) : [Math.floor(RUN_RULES.defaultMinutes / 60), RUN_RULES.defaultMinutes % 60];
-    const at = h * 60 + m;
-    // The hour just gone: an hourly run sends each once (and ref makes sure).
-    if (!(at <= minutes && at > minutes - 60)) continue;
     const r = await notify(db, { recipientId: e.household.owner_id, householdId: e.household.id, kind: REMIND_KINDS[e.kind], params: { title: e.title }, ref: `event:${e.id}:${today}` });
     if (!r?.duplicate) sent += 1;
   }

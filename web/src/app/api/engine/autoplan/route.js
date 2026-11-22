@@ -1,7 +1,7 @@
 // ============================================================================
-// GET /api/engine/autoplan — the hourly auto-plan and reminders (P7)
+// GET /api/engine/autoplan — the daily auto-plan and reminders (P7)
 //
-// Called by Vercel Cron every hour (web/vercel.json) with
+// Called by Vercel Cron once a day, 9 am IST (web/vercel.json; Hobby allows daily crons only), with
 // `Authorization: Bearer $CRON_SECRET`; closed unless that secret is set.
 // The run itself is lib/plan/autoplanRun.js: drafts for the households whose
 // owners asked for them (kept as drafts until approved; nothing is ordered),

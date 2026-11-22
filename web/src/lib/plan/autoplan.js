@@ -3,7 +3,7 @@
 //
 // A job (00093) is a weekday and a time in India ("every Sunday at 6 pm") and
 // the plan's rules (how many days, a budget, who is eating, when it starts).
-// The hourly job (/api/engine/autoplan) runs every job whose next run has come,
+// The daily job (/api/engine/autoplan, 9 am IST) runs every job whose next run has come,
 // keeps what it plans as a DRAFT, and tells the household; the next run is set
 // from here. India has no daylight saving, so IST is always UTC+5:30.
 // ============================================================================

@@ -5,6 +5,6 @@
     { "path": "/api/engine/recheck", "schedule": "0 2 * * *" },
     { "path": "/api/engine/run", "schedule": "0 3 * * *" },
     { "path": "/api/engine/category-reference", "schedule": "0 4 * * 0" },
-    { "path": "/api/engine/autoplan", "schedule": "0 * * * *" }
+    { "path": "/api/engine/autoplan", "schedule": "30 3 * * *" }
   ]
 }

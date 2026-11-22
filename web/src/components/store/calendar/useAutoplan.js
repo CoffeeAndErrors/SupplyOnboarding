@@ -2,7 +2,7 @@
 
 // The household's auto-plan job (00093), read and set as its owner (RLS). The
 // next run is worked out here when the job is saved (lib/plan/autoplan.js);
-// after that the hourly job keeps it. Unlike meals and calendar events, a job
+// after that the daily job keeps it. Unlike meals and calendar events, a job
 // is not held on the device when it can't be saved: only the server runs it,
 // so a job saved nowhere would be a promise KOI can't keep.
 
