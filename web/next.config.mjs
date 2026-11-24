@@ -14,6 +14,15 @@ const nextConfig = {
   turbopack: {
     root: __dirname,
   },
+  // The planner's solver (lib/planner/solve.js) is HiGHS compiled to
+  // WebAssembly. Bundled, its paths become virtual `[project]/...` ones and
+  // the .wasm beside it cannot be read, so /api/plan failed with ENOENT in the
+  // app while every script passed. Loaded with Node's own require, the
+  // package finds its .wasm where it is installed.
+  serverExternalPackages: ['highs'],
+  // Demo mode (npm run dev:demo) is for showing KOI to people: no Next.js
+  // badge in the corner. Compile and runtime errors still surface.
+  ...(process.env.NEXT_PUBLIC_KOI_DEMO === '1' ? { devIndicators: false } : {}),
   images: {
     // Derived from the configured project so a new Supabase ref does not
     // silently break every remote image. Falls back to none when unset.

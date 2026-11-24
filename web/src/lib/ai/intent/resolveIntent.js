@@ -46,7 +46,7 @@
 // ============================================================================
 
 import { FOODS_AVOID, FOODS_LOVE, THRESHOLDS } from "@/lib/recommendation/config";
-import { toPer100, toPerServing } from "@/lib/nutrition/basis";
+import { toPer100, toPerRealisticServing } from "@/lib/nutrition/basis";
 import { generateCandidates } from "@/lib/recommendation/candidateGenerator";
 import { filterEligible } from "@/lib/recommendation/eligibilityFilter";
 import { isNum } from "@/lib/recommendation/scoringEngine";
@@ -142,7 +142,7 @@ export function resolveIntent(products = [], intent = null, storedProfile = null
       if (f.contains.has(flag) || unverifiable) { counters.byAvoid += 1; return false; }
     }
 
-    if (meals.length && !meals.some((m) => mealMatches(f.category, f.haystack, m))) {
+    if (meals.length && !meals.some((m) => mealMatches(f, m))) {
       counters.byMeal += 1;
       return false;
     }
@@ -233,7 +233,9 @@ function withinLimits(facts, view, counters = null) {
       // converter serves all three and they cannot drift apart.
       const row = rowFromFacts(facts);
       per100 = toPer100(row);
-      perServing = toPerServing(row);
+      // A realistic serving, as the claim rules read it: the declared one, or
+      // the category's reference amount when the declared one is implausible.
+      perServing = toPerRealisticServing(row);
       if (basis !== LIMIT_BASIS && counters) counters.basisConverted += 1;
     }
   }

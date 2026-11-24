@@ -1,0 +1,48 @@
+/* The founder's Nutrition Planner design (KOI - Nutrition Planner.html), its
+   own stylesheet, scoped to the Plan page. Keyframes and layout classes are
+   the design's verbatim; everything else is inline in the components. */
+
+.koi-plan { min-height: calc(100vh - var(--koi-header-h)); background: #f6f5f1; color: #1c1e17; font-family: var(--koi-sans), "Plus Jakarta Sans", sans-serif; }
+.koi-plan *, .koi-plan *::before, .koi-plan *::after { box-sizing: border-box; }
+.koi-plan ::-webkit-scrollbar { width: 6px; height: 6px; }
+.koi-plan ::-webkit-scrollbar-thumb { background: #d9d7cd; border-radius: 6px; }
+.koi-plan input, .koi-plan textarea, .koi-plan select { font-family: var(--koi-sans), "Plus Jakarta Sans", sans-serif; outline: none; }
+.koi-plan input:focus, .koi-plan textarea:focus { border-bottom-color: #2f8050 !important; }
+.koi-plan button { font-family: inherit; }
+/* (The h1–h3 font rule is gone: chapter titles use the condensed display cut.) */
+
+/* Keyframes (koiUp, koiPop, koiStrike, koiDraw, koiFade, koiRingTo, koiPulse,
+   koiSpin) moved to app/store/koi.css so every store page shares them. */
+
+.koi-page { max-width: 1440px; margin: 0 auto; padding: 28px clamp(16px, 4vw, 52px) 96px; }
+.koi-members-row { display: flex; align-items: center; gap: 7px; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+.koi-hero { display: flex; gap: 40px; align-items: center; flex-wrap: wrap; margin-bottom: 32px; }
+.koi-goal-cards { flex: 2; min-width: 520px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.koi-plan-grid-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 8px; }
+.koi-pantry-layout { display: grid; grid-template-columns: 1fr 380px; gap: 18px; align-items: start; }
+.koi-track-layout { display: grid; grid-template-columns: 1fr 320px; gap: 18px; align-items: start; }
+.koi-you-layout { display: flex; gap: 24px; align-items: flex-start; }
+.koi-you-sidebar { flex: none; width: 300px; }
+.koi-you-main { flex: 1; min-width: 0; }
+.koi-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.koi-three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.koi-run { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+
+@media (max-width: 768px) {
+  .koi-page { padding: 20px 16px calc(var(--koi-bottom-chrome) + 32px); }
+  .koi-hero { flex-direction: column; gap: 20px; margin-bottom: 20px; }
+  .koi-hero-text { min-width: 0 !important; width: 100%; }
+  .koi-hero-text h1 { font-size: 34px !important; }
+  .koi-goal-cards { min-width: 0 !important; grid-template-columns: repeat(2, 1fr) !important; gap: 10px; width: 100%; }
+  .koi-plan-grid-wrap { margin: 0 -16px; padding: 0 16px 8px; }
+  .koi-pantry-layout { grid-template-columns: 1fr !important; }
+  .koi-track-layout { grid-template-columns: 1fr !important; }
+  .koi-you-layout { flex-direction: column !important; }
+  .koi-you-sidebar { width: 100% !important; }
+  .koi-two, .koi-three { grid-template-columns: 1fr; }
+  .koi-run { grid-template-columns: 1fr; }
+}
+@media (max-width: 480px) {
+  .koi-hero-text h1 { font-size: 28px !important; line-height: 1.1 !important; }
+  .koi-goal-cards { grid-template-columns: repeat(2, 1fr) !important; }
+}

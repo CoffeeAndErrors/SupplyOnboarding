@@ -1,398 +1,216 @@
 "use client"
 
-import React from 'react'
-import { Plus, CheckCircle, Clock3, AlertTriangle, Play, Upload, ShieldCheck, Flag, Search, Activity, FileText, X } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import StatsCard from '@/components/dashboard/StatsCard'
-import { useRouter } from 'next/navigation'
+// Brand portal — verification (BrandVerification board). A five-stage strip,
+// the submissions table, and a detail panel for the picked submission: its
+// timeline (KOI reads → a person checks → decision), any risks, the reviewer's
+// note. Every figure here is still the page's original sample data — there is
+// no submissions feed for brands yet — so each panel says "Sample".
 
-// --- MOCK DATA ---
-const KPI_DATA = {
-  submitted: 24,
-  aiReview: 5,
-  humanReview: 3,
-  approved: 16
-}
+import React, { useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
+import { Plus, Check, X } from 'lucide-react'
+import PageTitle from '@/components/dashboard/PageTitle'
+import { cn } from '@/lib/utils'
+import { setupMotion, prefersReducedMotion, useGSAP, E } from '@/lib/motion/koiMotion'
 
-const KANBAN_PIPELINE = {
-  drafts: [
-    { id: 1, name: 'Vanilla Whey 1kg', updated: '2 hrs ago' }
-  ],
-  submitted: [
-    { id: 2, name: 'Pre-Workout Rush', date: 'Today, 10:42 AM' },
-    { id: 3, name: 'Vegan Pea Protein', date: 'Yesterday' }
-  ],
-  aiReview: [
-    { 
-      id: 4, 
-      name: 'Hydration Mix', 
-      progress: 76, 
-      tasks: [
-        { label: 'OCR complete', done: true },
-        { label: 'Nutrition parsed', done: true },
-        { label: 'Claim validation pending', done: false },
-        { label: 'Trust scoring pending', done: false }
-      ]
-    }
-  ],
-  humanReview: [
-    { 
-      id: 5, 
-      name: 'Sleep Gummies', 
-      flags: 2, 
-      badge: 'Action Required',
-      needsEvidence: true 
-    }
-  ],
-  finalDecision: [
-    { id: 6, name: 'Creatine Monohydrate', status: 'approved' },
-    { id: 7, name: 'Mass Gainer Pro', status: 'rejected', reason: 'Sugar claims unsupported' }
-  ]
-}
-
-const DETAILED_TABLE = [
-  { id: 'PRD-001', product: 'Hydration Mix', sku: 'HYD-01', submitted: '2026-06-23', stage: 'AI Review', score: '-', flags: 0, statusLabel: 'AI Review' },
-  { id: 'PRD-002', product: 'Sleep Gummies', sku: 'SLP-99', submitted: '2026-06-22', stage: 'Human Review', score: '62/100', flags: 2, statusLabel: 'Human Review' },
-  { id: 'PRD-003', product: 'Creatine Monohydrate', sku: 'CRT-05', submitted: '2026-06-20', stage: 'Approved', score: '98/100', flags: 0, statusLabel: 'Approved' },
-  { id: 'PRD-004', product: 'Mass Gainer Pro', sku: 'MSG-01', submitted: '2026-06-19', stage: 'Rejected', score: '45/100', flags: 3, statusLabel: 'Rejected' },
-  { id: 'PRD-005', product: 'Pre-Workout Rush', sku: 'PWR-01', submitted: '2026-06-23', stage: 'Submitted', score: '-', flags: 0, statusLabel: 'Submitted' }
+// --- SAMPLE DATA (unchanged records, regrouped) ---
+const STAGES = [
+  { key: 'draft', label: 'Draft', n: 1, sub: 'Not sent yet', cls: 'bg-koi-paper text-koi-ink2' },
+  { key: 'submitted', label: 'Submitted', n: 2, sub: 'Waiting to be read', cls: 'bg-koi-tint text-koi-primary' },
+  { key: 'ai', label: 'AI Review', n: 5, sub: 'KOI is reading labels', cls: 'bg-koi-forest text-koi-bg' },
+  { key: 'human', label: 'Human Review', n: 3, sub: 'A person is checking', cls: 'bg-koi-amber-bg text-koi-amber-ink' },
+  { key: 'approved', label: 'Approved', n: 16, sub: 'Live on KOI', cls: 'bg-koi-lime-soft text-koi-forest' },
 ]
 
-const getStatusBadge = (status) => {
-  switch (status) {
-    case 'Draft': return 'bg-white text-gray-700 border-gray-200'
-    case 'Submitted': return 'bg-white text-blue-700 border-l-blue-500 border-y-gray-200 border-r-gray-200'
-    case 'AI Review': return 'bg-white text-[#0E4032] border-[#0E4032]/20'
-    case 'Human Review': return 'bg-white text-amber-700 border-amber-200'
-    case 'Approved': return 'bg-white text-green-700 border-green-200'
-    case 'Rejected': return 'bg-white text-red-700 border-red-200'
-    default: return 'bg-white text-gray-700 border-gray-200'
-  }
+const ROWS = [
+  { id: 'PRD-001', product: 'Hydration Mix', sku: 'HYD-01', submitted: '2026-06-23', stage: 'AI Review', score: null,
+    note: { text: 'Please provide clearer images of the back packaging for Hydration Mix. OCR confidence is below 80%.', by: 'KOI review team' } },
+  { id: 'PRD-002', product: 'Sleep Gummies', sku: 'SLP-99', submitted: '2026-06-22', stage: 'Human Review', score: 62,
+    risks: [{ impact: 'Medium', title: 'Missing Lab Report', body: 'Melatonin levels require 3rd party lab evidence.' }] },
+  { id: 'PRD-003', product: 'Creatine Monohydrate', sku: 'CRT-05', submitted: '2026-06-20', stage: 'Approved', score: 98 },
+  { id: 'PRD-004', product: 'Mass Gainer Pro', sku: 'MSG-01', submitted: '2026-06-19', stage: 'Rejected', score: 45,
+    risks: [{ impact: 'High', title: 'Claim Unsupported', body: '“Zero Sugar” contradicts the parsed ingredients.' }],
+    note: { text: 'Sugar claims unsupported. Remove the claim, or change the recipe and send new label photos.', by: 'KOI review team' } },
+  { id: 'PRD-005', product: 'Pre-Workout Rush', sku: 'PWR-01', submitted: '2026-06-23', stage: 'Submitted', score: null },
+]
+
+const FEED = [
+  { what: 'OCR complete', product: 'Hydration Mix', time: '10:48', dot: 'bg-koi-forest' },
+  { what: 'AI review started', product: 'Pre-Workout Rush', time: '10:44', dot: 'bg-koi-amber' },
+  { what: 'Submitted', product: 'Pre-Workout Rush', time: '10:42', dot: 'bg-koi-track' },
+]
+
+const PILL = {
+  Draft: 'border-koi-forest/15 bg-white text-koi-ink2',
+  Submitted: 'border-koi-tint-border bg-koi-tint text-koi-primary',
+  'AI Review': 'border-koi-forest/30 bg-white text-koi-forest',
+  'Human Review': 'border-koi-amber-border bg-koi-amber-bg text-koi-amber-ink',
+  Approved: 'border-koi-tint-border bg-koi-tint text-koi-primary',
+  Rejected: 'border-koi-red/20 bg-koi-red-bg text-koi-red',
 }
 
-const StatusIcon = ({ status }) => {
-  switch (status) {
-    case 'Draft': return null
-    case 'Submitted': return <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-1.5"></div>
-    case 'AI Review': return <div className="w-1.5 h-1.5 rounded-full bg-[#0E4032] animate-pulse mr-1.5"></div>
-    case 'Human Review': return <AlertTriangle className="w-3 h-3 text-amber-500 mr-1.5" />
-    case 'Approved': return <CheckCircle className="w-3 h-3 text-green-500 mr-1.5" />
-    case 'Rejected': return <AlertTriangle className="w-3 h-3 text-red-500 mr-1.5" />
-    default: return null
+const ORDER = ['Submitted', 'AI Review', 'Human Review', 'Decision']
+
+// The submission's road so far: done, here, or still to come.
+function timeline(stage) {
+  const at = stage === 'Approved' || stage === 'Rejected' ? 3 : Math.max(0, ORDER.indexOf(stage))
+  const notes = {
+    Submitted: 'Your labels reached KOI.',
+    'AI Review': 'KOI transcribes each label exactly as printed.',
+    'Human Review': 'A KOI reviewer checks every ingredient and allergen.',
+    Decision: stage === 'Approved' ? 'Approved — live on KOI.' : stage === 'Rejected' ? 'Not approved — see the note below.' : 'Approval, or a note on what to change.',
   }
+  return ORDER.map((label, i) => ({
+    label,
+    note: notes[label],
+    state: i < at || (i === at && (stage === 'Approved')) ? 'done' : i === at ? (stage === 'Rejected' ? 'rejected' : 'here') : 'later',
+  }))
+}
+
+const IMPACT = {
+  High: { box: 'border-koi-red/20 bg-koi-red-bg', tag: 'bg-koi-red', title: 'text-koi-red' },
+  Medium: { box: 'border-koi-amber-border bg-koi-amber-bg', tag: 'bg-koi-amber', title: 'text-koi-amber-ink' },
 }
 
 export default function VerificationPage() {
-  const router = useRouter()
+  const [picked, setPicked] = useState(ROWS[1].id)
+  const root = useRef(null)
+  const detail = ROWS.find((r) => r.id === picked) ?? ROWS[0]
+  const steps = useMemo(() => timeline(detail.stage), [detail.stage])
+
+  useGSAP(() => {
+    if (prefersReducedMotion()) return
+    const gsap = setupMotion()
+    const q = (s) => root.current.querySelectorAll(s)
+    gsap.from(q('[data-stage]'), { autoAlpha: 0, y: 20, duration: 0.6, stagger: 0.06, delay: 0.15, ease: E.reveal, clearProps: 'opacity,visibility,transform' })
+    gsap.from(q('[data-card]'), { autoAlpha: 0, y: 30, duration: 0.8, stagger: 0.08, delay: 0.3, ease: E.dolly, clearProps: 'opacity,visibility,transform' })
+  }, { scope: root })
+
+  // The detail panel re-cuts when another submission is picked.
+  useGSAP(() => {
+    if (prefersReducedMotion()) return
+    const gsap = setupMotion()
+    gsap.from(root.current.querySelectorAll('[data-detail] > *'), { autoAlpha: 0, x: 16, duration: 0.45, stagger: 0.05, ease: E.reveal, clearProps: 'opacity,visibility,transform' })
+  }, { scope: root, dependencies: [picked] })
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-12">
-      
-      {/* HEADER */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-        <div>
-          <h2 className="text-[32px] md:text-[36px] font-display font-bold text-[#111827] tracking-tight leading-none mb-2" style={{ fontFamily: "var(--font-koi-heading)" }}>
-            Verification
-          </h2>
-          <p className="text-[16px] text-[#6B7280]">
-            Track AI screening, human review, and approval status for product submissions.
-          </p>
-        </div>
-        <Button 
-          onClick={() => router.push('/dashboard/products/new')}
-          className="bg-[#0E4032] hover:bg-[#0a2e24] text-white h-12 px-6 rounded-xl shadow-[0_4px_14px_rgba(79,56,99,0.3)] hover:shadow-[0_6px_20px_rgba(79,56,99,0.4)] transition-all duration-300 gap-2 font-semibold"
-        >
-          <Plus className="w-5 h-5" />
-          Submit New Product
-        </Button>
-      </div>
+    <div ref={root} className="flex flex-col gap-6 pb-12">
+      <PageTitle
+        title="Verification"
+        sub="Track AI screening, human review, and approval status for product submissions."
+        action={<Link href="/dashboard/products/new" className="flex h-12 items-center gap-2 rounded-2xl bg-koi-forest px-5 text-sm font-bold text-koi-lime no-underline"><Plus className="size-5" />Submit New Product</Link>}
+      />
 
-      {/* SECTION 1 - KPI CARDS */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatsCard icon={CheckCircle} value={KPI_DATA.submitted} label="Products Submitted" styleType="neutral" />
-        <StatsCard icon={Activity} value={KPI_DATA.aiReview} label="AI Review" styleType="special" />
-        <StatsCard icon={Clock3} value={KPI_DATA.humanReview} label="Human Review" styleType="warning" />
-        <StatsCard icon={ShieldCheck} value={KPI_DATA.approved} label="Approved" styleType="success" />
-      </div>
-
-      {/* SECTION 2 - KANBAN PIPELINE */}
-      <div>
-        <h3 className="text-xl font-bold text-gray-900 mb-4" style={{ fontFamily: "var(--font-koi-heading)" }}>Verification Pipeline</h3>
-        <div className="flex overflow-x-auto gap-6 pb-4 hide-scrollbar snap-x">
-          
-          {/* COLUMN 1: DRAFT */}
-          <div className="w-[300px] flex-shrink-0 snap-start flex flex-col">
-            <div className="flex items-center justify-between mb-3 px-1">
-              <span className="font-bold text-gray-500 uppercase tracking-wider text-xs">Draft ({KANBAN_PIPELINE.drafts.length})</span>
-            </div>
-            <div className="flex-1 bg-gray-50/50 border border-gray-200/60 rounded-2xl p-3 space-y-3 min-h-[400px]">
-              {KANBAN_PIPELINE.drafts.map(item => (
-                <div key={item.id} className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-all">
-                  <h4 className="font-bold text-gray-800 text-sm mb-1" style={{ fontFamily: "var(--font-koi-heading)" }}>{item.name}</h4>
-                  <p className="text-xs text-gray-400 mb-4">Updated {item.updated}</p>
-                  <Button variant="outline" className="w-full text-xs h-8 border-gray-300 text-gray-600 rounded-lg">
-                    <Play className="w-3 h-3 mr-1.5" /> Resume
-                  </Button>
-                </div>
-              ))}
-            </div>
+      <section aria-label="Verification Pipeline" className="grid grid-cols-2 gap-3 rounded-[26px] border border-koi-forest/10 bg-white p-4 md:grid-cols-5 md:p-5">
+        {STAGES.map((p) => (
+          <div key={p.key} data-stage className={cn('flex flex-col gap-1 rounded-2xl p-4', p.cls)}>
+            <span className="font-koi-mono text-[10.5px] font-semibold uppercase tracking-[0.14em] opacity-80">{p.label}</span>
+            <span className="font-koi-num text-[32px] font-semibold leading-none">{p.n}</span>
+            <span className="text-[12px] opacity-75">{p.sub}</span>
           </div>
+        ))}
+        <span className="col-span-2 font-koi-mono text-[10px] uppercase tracking-[0.14em] text-koi-muted md:col-span-5">Sample figures</span>
+      </section>
 
-          {/* COLUMN 2: SUBMITTED */}
-          <div className="w-[300px] flex-shrink-0 snap-start flex flex-col">
-            <div className="flex items-center justify-between mb-3 px-1">
-              <span className="font-bold text-blue-600 uppercase tracking-wider text-xs">Submitted ({KANBAN_PIPELINE.submitted.length})</span>
-            </div>
-            <div className="flex-1 bg-blue-50/30 border border-blue-100 rounded-2xl p-3 space-y-3 min-h-[400px]">
-              {KANBAN_PIPELINE.submitted.map(item => (
-                <div key={item.id} className="bg-white border border-blue-100 rounded-xl p-4 shadow-sm hover:shadow-md transition-all">
-                  <h4 className="font-bold text-gray-800 text-sm mb-1" style={{ fontFamily: "var(--font-koi-heading)" }}>{item.name}</h4>
-                  <p className="text-xs text-gray-400">Queued • {item.date}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* COLUMN 3: AI REVIEW */}
-          <div className="w-[300px] flex-shrink-0 snap-start flex flex-col">
-            <div className="flex items-center justify-between mb-3 px-1">
-              <span className="font-bold text-[#0E4032] uppercase tracking-wider text-xs">AI Review ({KANBAN_PIPELINE.aiReview.length})</span>
-            </div>
-            <div className="flex-1 bg-[#0E4032]/5 border border-[#0E4032]/10 rounded-2xl p-3 space-y-3 min-h-[400px]">
-              {KANBAN_PIPELINE.aiReview.map(item => (
-                <div key={item.id} className="bg-white border border-[#0E4032]/20 rounded-xl p-4 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex justify-between items-start mb-3">
-                    <h4 className="font-bold text-gray-800 text-sm" style={{ fontFamily: "var(--font-koi-heading)" }}>{item.name}</h4>
-                    <span className="text-xs font-bold text-[#0E4032]">{item.progress}%</span>
-                  </div>
-                  {/* Progress Bar */}
-                  <div className="h-1.5 w-full bg-gray-100 rounded-full mb-4 overflow-hidden">
-                    <div className="h-full bg-[#0E4032] rounded-full" style={{ width: `${item.progress}%` }}></div>
-                  </div>
-                  <div className="space-y-2">
-                    {item.tasks.map((task, i) => (
-                      <div key={i} className="flex items-center gap-2 text-[11px]">
-                        {task.done ? (
-                          <CheckCircle className="w-3.5 h-3.5 text-green-500" />
-                        ) : (
-                          <div className="w-3.5 h-3.5 rounded-full border border-gray-300 border-t-gray-400 animate-spin" />
-                        )}
-                        <span className={task.done ? 'text-gray-600' : 'text-gray-400'}>{task.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* COLUMN 4: HUMAN REVIEW */}
-          <div className="w-[300px] flex-shrink-0 snap-start flex flex-col">
-            <div className="flex items-center justify-between mb-3 px-1">
-              <span className="font-bold text-amber-600 uppercase tracking-wider text-xs">Human Review ({KANBAN_PIPELINE.humanReview.length})</span>
-            </div>
-            <div className="flex-1 bg-amber-50/50 border border-amber-200/60 rounded-2xl p-3 space-y-3 min-h-[400px]">
-              {KANBAN_PIPELINE.humanReview.map(item => (
-                <div key={item.id} className="bg-white border border-amber-200 rounded-xl p-4 shadow-[0_4px_12px_rgba(245,158,11,0.05)]">
-                  <div className="inline-flex items-center bg-white text-gray-900 border border-red-200 px-2 py-0.5 rounded text-[10px] font-bold uppercase mb-2">
-                    <AlertTriangle className="w-3 h-3 text-red-500 mr-1.5" />
-                    {item.badge}
-                  </div>
-                  <h4 className="font-bold text-gray-800 text-sm mb-2" style={{ fontFamily: "var(--font-koi-heading)" }}>{item.name}</h4>
-                  <div className="flex items-center gap-1.5 text-xs text-amber-700 font-medium mb-4 bg-amber-50 px-2 py-1 rounded-md w-fit">
-                    <Flag className="w-3.5 h-3.5" />
-                    {item.flags} Flags
-                  </div>
-                  {item.needsEvidence && (
-                    <Button className="w-full text-xs h-8 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg shadow-none">
-                      <Upload className="w-3 h-3 mr-1.5" /> Upload Evidence
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* COLUMN 5: FINAL DECISION */}
-          <div className="w-[300px] flex-shrink-0 snap-start flex flex-col">
-            <div className="flex items-center justify-between mb-3 px-1">
-              <span className="font-bold text-green-600 uppercase tracking-wider text-xs">Final Decision ({KANBAN_PIPELINE.finalDecision.length})</span>
-            </div>
-            <div className="flex-1 bg-green-50/30 border border-green-100 rounded-2xl p-3 space-y-3 min-h-[400px]">
-              {KANBAN_PIPELINE.finalDecision.map(item => (
-                <div key={item.id} className={`bg-white border rounded-xl p-4 shadow-sm ${item.status === 'approved' ? 'border-green-200' : 'border-red-200'}`}>
-                  <h4 className="font-bold text-gray-800 text-sm mb-2" style={{ fontFamily: "var(--font-koi-heading)" }}>{item.name}</h4>
-                  {item.status === 'approved' ? (
-                    <div className="inline-flex items-center bg-white text-gray-900 border border-green-200 px-2.5 py-1 rounded-md text-xs font-semibold">
-                      <CheckCircle className="w-3.5 h-3.5 text-green-500 mr-1.5" /> Approved
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="inline-flex items-center bg-white text-gray-900 border border-red-200 px-2.5 py-1 rounded-md text-xs font-semibold">
-                        <AlertTriangle className="w-3.5 h-3.5 text-red-500 mr-1.5" /> Rejected
-                      </div>
-                      <p className="text-xs text-gray-500 leading-tight">Reason: {item.reason}</p>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      {/* BOTTOM GRID: TABLE & RIGHT PANEL */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* SECTION 3 - DETAILED TABLE (Spans 2 columns) */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-            <h3 className="font-bold text-gray-900" style={{ fontFamily: "var(--font-koi-heading)" }}>All Submissions</h3>
-            <div className="relative">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
-              <input type="text" placeholder="Search..." className="pl-9 pr-4 py-1.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0E4032]/20 focus:border-[#0E4032]" />
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left">
-              <thead className="bg-white border-b border-gray-100 text-xs uppercase font-bold text-gray-400">
-                <tr>
-                  <th className="px-5 py-4">Product</th>
-                  <th className="px-5 py-4">Submitted</th>
-                  <th className="px-5 py-4">Current Stage</th>
-                  <th className="px-5 py-4">Trust Score</th>
-                  <th className="px-5 py-4">Action</th>
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+        <section data-card aria-label="All Submissions" className="flex flex-col rounded-[26px] border border-koi-forest/10 bg-white p-6">
+          <span className="flex items-baseline justify-between gap-2"><span className="text-lg font-bold">All Submissions</span><span className="font-koi-mono text-[10px] uppercase tracking-[0.14em] text-koi-muted">Sample</span></span>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[480px] border-collapse text-left text-[14px]">
+              <thead>
+                <tr className="border-b border-koi-forest/10 font-koi-mono text-[10.5px] uppercase tracking-[0.12em] text-koi-muted">
+                  <th scope="col" className="py-2.5 font-medium">Product</th>
+                  <th scope="col" className="py-2.5 font-medium">Submitted</th>
+                  <th scope="col" className="py-2.5 font-medium">Current Stage</th>
+                  <th scope="col" className="py-2.5 text-right font-medium">Trust Score</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-50">
-                {DETAILED_TABLE.map((row) => (
-                  <tr key={row.id} className="hover:bg-gray-50/50 transition-colors">
-                    <td className="px-5 py-4">
-                      <div className="font-semibold text-gray-900">{row.product}</div>
-                      <div className="text-xs text-gray-400 font-mono mt-0.5">{row.sku}</div>
-                    </td>
-                    <td className="px-5 py-4 text-gray-600">{row.submitted}</td>
-                    <td className="px-5 py-4">
-                      <div className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider border ${getStatusBadge(row.statusLabel)}`}>
-                        <StatusIcon status={row.statusLabel} />
-                        {row.statusLabel}
-                      </div>
-                    </td>
-                    <td className="px-5 py-4">
-                      {row.score !== '-' ? (
-                        <div className="flex items-center gap-2">
-                          <span className={`font-bold ${parseInt(row.score) > 80 ? 'text-green-600' : 'text-amber-600'}`}>{row.score}</span>
-                          {row.flags > 0 && (
-                            <span className="flex items-center gap-1 text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded font-bold">
-                              <Flag className="w-3 h-3" /> {row.flags}
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-gray-300 font-mono">---</span>
-                      )}
-                    </td>
-                    <td className="px-5 py-4">
-                      <Button variant="ghost" className="h-8 px-3 text-[#0E4032] font-semibold text-xs hover:bg-[#0E4032]/10">View</Button>
-                    </td>
-                  </tr>
-                ))}
+              <tbody>
+                {ROWS.map((r) => {
+                  const on = r.id === picked
+                  return (
+                    <tr key={r.id} className={cn('border-b border-koi-forest/10 transition-colors last:border-b-0', on ? 'bg-koi-paper' : 'hover:bg-koi-paper/60')}>
+                      <td className="py-0">
+                        <button type="button" aria-pressed={on} onClick={() => setPicked(r.id)} className="flex w-full items-center gap-2 py-3.5 text-left font-semibold">
+                          {on && <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-koi-ember" />}
+                          <span className="flex flex-col"><span>{r.product}</span><span className="font-koi-mono text-[11px] font-normal text-koi-muted">{r.sku}</span></span>
+                        </button>
+                      </td>
+                      <td className="py-3.5 font-koi-num text-koi-ink2">{r.submitted}</td>
+                      <td className="py-3.5"><span className={cn('rounded-full border px-2.5 py-1 text-[12px] font-bold', PILL[r.stage])}>{r.stage}</span></td>
+                      <td className="py-3.5 text-right font-koi-num font-semibold">{r.score ?? <span className="text-koi-muted">—</span>}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
 
-        {/* SECTION 4 - RIGHT PANEL */}
-        <div className="space-y-6">
-          
-          {/* Card 1: Risk Alerts */}
-          <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-            <h4 className="font-bold text-gray-900 mb-4 flex items-center gap-2" style={{ fontFamily: "var(--font-koi-heading)" }}>
-              <AlertTriangle className="w-4 h-4 text-amber-500" />
-              Risk Alerts
-            </h4>
-            <div className="space-y-3">
-              <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full border border-red-100 flex items-center justify-center bg-white shadow-sm shrink-0 mt-0.5">
-                  <AlertTriangle className="w-4 h-4 text-red-500" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-bold uppercase text-gray-900 border border-red-200 px-2 py-0.5 rounded tracking-wider bg-white">High Impact</span>
-                  </div>
-                  <h5 className="text-sm font-semibold text-gray-900 mb-0.5" style={{ fontFamily: "var(--font-koi-heading)" }}>Claim Unsupported</h5>
-                  <p className="text-[13px] text-gray-500">Mass Gainer Pro: &quot;Zero Sugar&quot; contradicts parsed ingredients.</p>
-                </div>
-              </div>
-              
-              <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full border border-amber-100 flex items-center justify-center bg-white shadow-sm shrink-0 mt-0.5">
-                  <AlertTriangle className="w-4 h-4 text-amber-500" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-bold uppercase text-gray-900 border border-amber-200 px-2 py-0.5 rounded tracking-wider bg-white">Medium Impact</span>
-                  </div>
-                  <h5 className="text-sm font-semibold text-gray-900 mb-0.5" style={{ fontFamily: "var(--font-koi-heading)" }}>Missing Lab Report</h5>
-                  <p className="text-[13px] text-gray-500">Sleep Gummies: Melatonin levels require 3rd party lab evidence.</p>
-                </div>
-              </div>
+        <section data-detail aria-label={detail.product} className="flex flex-col gap-4 rounded-[26px] border border-koi-forest/10 bg-white p-6">
+          <span className="flex flex-col gap-0.5">
+            <span className="font-koi-mono text-[10.5px] font-semibold uppercase tracking-[0.14em] text-koi-muted">Submission · sample</span>
+            <span className="font-koi-display text-[24px] font-extrabold leading-tight tracking-[-0.01em] text-koi-forest">{detail.product}</span>
+          </span>
+          <ol className="m-0 flex list-none flex-col p-0">
+            {steps.map((t, i) => (
+              <li key={t.label} className="flex gap-3">
+                <span className="flex flex-col items-center">
+                  <span className={cn('grid size-7 shrink-0 place-items-center rounded-full border-2 text-[11px] font-bold',
+                    t.state === 'done' && 'border-koi-green bg-koi-green text-white',
+                    t.state === 'here' && 'border-koi-forest bg-white',
+                    t.state === 'rejected' && 'border-koi-red bg-koi-red text-white',
+                    t.state === 'later' && 'border-koi-forest/20 bg-white text-koi-muted')}>
+                    {t.state === 'done' ? <Check className="size-3.5" strokeWidth={3} /> : t.state === 'rejected' ? <X className="size-3.5" strokeWidth={3} /> : t.state === 'here' ? <span aria-hidden="true" className="size-2 rounded-full bg-koi-ember" /> : i + 1}
+                  </span>
+                  {i < steps.length - 1 && <span aria-hidden="true" className={cn('my-1 min-h-[18px] w-0.5 flex-1', t.state === 'done' ? 'bg-koi-green' : 'bg-koi-forest/15')} />}
+                </span>
+                <span className="flex flex-col pb-3">
+                  <span className={cn('text-[14px] font-bold', t.state === 'later' && 'text-koi-ink2')}>{t.label}</span>
+                  <span className="text-[12.5px] text-koi-ink2">{t.note}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+          {(detail.risks ?? []).map((risk) => (
+            <div key={risk.title} className={cn('flex flex-col gap-2 rounded-2xl border p-4', IMPACT[risk.impact].box)}>
+              <span className="flex items-center gap-2">
+                <span className={cn('rounded-full px-2 py-0.5 font-koi-mono text-[9.5px] font-bold uppercase tracking-[0.12em] text-white', IMPACT[risk.impact].tag)}>{risk.impact} Impact</span>
+                <span className={cn('text-[14px] font-bold', IMPACT[risk.impact].title)}>{risk.title}</span>
+              </span>
+              <span className="text-[13.5px] leading-relaxed text-koi-ink">{risk.body}</span>
             </div>
-          </div>
-
-          {/* Card 2: Reviewer Notes */}
-          <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-            <h4 className="font-bold text-gray-900 mb-4 flex items-center gap-2" style={{ fontFamily: "var(--font-koi-heading)" }}>
-              <FileText className="w-4 h-4 text-blue-500" />
-              Reviewer Notes
-            </h4>
-            <div className="bg-gray-50 border border-gray-100 rounded-xl p-4">
-              <p className="text-sm text-gray-600 italic">&quot;Please provide clearer images of the back packaging for Hydration Mix. OCR confidence is below 80%.&quot;</p>
-              <div className="mt-3 text-xs text-gray-400 font-semibold">— Admin System</div>
-            </div>
-          </div>
-
-          {/* Card 3: Activity Feed */}
-          <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-            <h4 className="font-bold text-gray-900 mb-4 flex items-center gap-2" style={{ fontFamily: "var(--font-koi-heading)" }}>
-              <Activity className="w-4 h-4 text-green-500" />
-              Activity Feed
-            </h4>
-            <div className="relative pl-4 space-y-6 before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-gray-200 before:to-transparent">
-              
-              <div className="relative flex items-center justify-between">
-                <div className="absolute -left-5 w-2.5 h-2.5 bg-[#0E4032] rounded-full ring-4 ring-white"></div>
-                <div className="flex flex-col">
-                  <span className="text-sm font-semibold text-gray-900">OCR complete</span>
-                  <span className="text-xs text-gray-500">Hydration Mix</span>
-                </div>
-                <span className="text-xs font-mono text-gray-400">10:48 AM</span>
-              </div>
-
-              <div className="relative flex items-center justify-between">
-                <div className="absolute -left-5 w-2.5 h-2.5 bg-gray-300 rounded-full ring-4 ring-white"></div>
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium text-gray-700">AI review started</span>
-                  <span className="text-xs text-gray-500">Pre-Workout Rush</span>
-                </div>
-                <span className="text-xs font-mono text-gray-400">10:44 AM</span>
-              </div>
-
-              <div className="relative flex items-center justify-between">
-                <div className="absolute -left-5 w-2.5 h-2.5 bg-gray-300 rounded-full ring-4 ring-white"></div>
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium text-gray-700">Submitted</span>
-                  <span className="text-xs text-gray-500">Pre-Workout Rush</span>
-                </div>
-                <span className="text-xs font-mono text-gray-400">10:42 AM</span>
-              </div>
-
-            </div>
-          </div>
-
-        </div>
+          ))}
+          {detail.note && (
+            <figure className="m-0 flex flex-col gap-1.5 rounded-2xl bg-koi-paper p-4">
+              <span className="font-koi-mono text-[10.5px] font-semibold uppercase tracking-[0.14em] text-koi-muted">Reviewer Notes</span>
+              <blockquote className="m-0 text-[14px] leading-relaxed">{detail.note.text}</blockquote>
+              <figcaption className="text-[12.5px] text-koi-muted">— {detail.note.by}</figcaption>
+            </figure>
+          )}
+          {detail.risks?.length > 0 && (
+            <Link href="/dashboard/compliance" className="flex h-11 items-center self-start rounded-full border border-koi-forest/15 px-4 text-sm font-semibold text-koi-forest no-underline hover:bg-koi-paper">Upload Evidence</Link>
+          )}
+          {!detail.risks?.length && !detail.note && (
+            <p className="m-0 rounded-2xl bg-koi-paper px-4 py-3 text-[13.5px] leading-relaxed text-koi-ink2">
+              {detail.stage === 'Approved' ? 'Nothing to do — this one is live.' : 'Nothing needs you yet. KOI will note anything a reviewer finds.'}
+            </p>
+          )}
+        </section>
       </div>
+
+      <section data-card aria-label="Activity Feed" className="flex flex-col gap-3 rounded-[26px] border border-koi-forest/10 bg-white p-6">
+        <span className="flex items-baseline justify-between gap-2"><span className="text-lg font-bold">Activity Feed</span><span className="font-koi-mono text-[10px] uppercase tracking-[0.14em] text-koi-muted">Today · sample data</span></span>
+        <ol className="m-0 grid list-none grid-cols-1 gap-x-8 gap-y-1 p-0 md:grid-cols-2">
+          {FEED.map((f) => (
+            <li key={f.what + f.time} className="flex items-center gap-3 border-b border-koi-forest/10 py-2.5">
+              <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-full', f.dot)} />
+              <span className="flex min-w-0 flex-1 flex-col"><span className="text-[14px] font-semibold">{f.what}</span><span className="truncate text-[12.5px] text-koi-muted">{f.product}</span></span>
+              <span className="font-koi-num text-[12.5px] text-koi-muted">{f.time}</span>
+            </li>
+          ))}
+        </ol>
+      </section>
     </div>
   )
 }

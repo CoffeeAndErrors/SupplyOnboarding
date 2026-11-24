@@ -19,7 +19,7 @@
 
 import { normalizedColumns } from "@/lib/nutrition/basis";
 import { NUTRIENT_FIELDS } from "./labelSchema";
-import { flagsInIngredients, flagsInStatement } from "./checks";
+import { flagsInIngredients, flagsInStatement, mayContainInIngredients } from "./checks";
 
 export const AUTO_ACCEPT = Object.freeze({ nutrition: false });
 
@@ -48,12 +48,51 @@ export function toNutritionRow(nutrition, netWeight = null) {
  * under-proposing is how an allergen goes unremarked. `may_contain` comes from
  * the precautionary statement only.
  */
+// A statement about the factory, not the food: "Manufactured in a facility
+// that also processes peanut, gluten, soy…". Models file these under the
+// allergen statement (both did, for Daily Dry Fruit Mix), which would publish
+// every allergen the factory handles as an ingredient. Classified here, by
+// wording, rather than trusted to the transcription.
+const PRECAUTIONARY = /\b(may contain|may be present|traces? of|facility|premises|same (?:line|plant|equipment)|shared|also (?:processes|handles)|processed (?:in|on|with)|manufactured (?:in|on))\b/i;
+
+export const isPrecautionary = (statement) => Boolean(statement) && PRECAUTIONARY.test(statement);
+
+/**
+ * A statement is not one thing. Indian packs routinely print both sentences
+ * under one heading — "ALLERGEN INFORMATION: CONTAINS WHEAT AND NUTS. MAY
+ * CONTAIN MILK." — and classifying the whole statement as precautionary because
+ * it contains the words "may contain" files the DECLARED wheat as a trace. That
+ * is the Madras Mixture label, and it is the wrong direction to be wrong in: a
+ * coeliac shopper would be shown a product that says it contains wheat as one
+ * that merely might.
+ *
+ * So the statement is cut at its first precautionary marker. What comes before
+ * is a declaration; what comes after is a warning about the factory. A
+ * statement that begins precautionary has nothing before the cut and stays
+ * entirely precautionary, which is the Daily Dry Fruit Mix case unchanged.
+ *
+ * @returns {{declared: string, precautionary: string}}
+ */
+export function splitStatement(statement) {
+  const text = String(statement ?? "");
+  const at = text.search(PRECAUTIONARY);
+  if (at < 0) return { declared: text, precautionary: "" };
+  return { declared: text.slice(0, at), precautionary: text.slice(at) };
+}
+
 export function proposeAllergens(reading) {
   const fromText = flagsInIngredients(reading.ingredients_text);
-  const fromStatement = flagsInStatement(reading.allergen_statement);
+  const { declared, precautionary } = splitStatement(reading.allergen_statement);
+  const fromStatement = flagsInStatement(declared);
+  const contains = [...new Set([...fromText, ...fromStatement])];
+  const mayContain = [...new Set([
+    ...mayContainInIngredients(reading.ingredients_text),
+    ...flagsInStatement(reading.may_contain_statement),
+    ...flagsInStatement(precautionary),
+  ])].filter((flag) => !contains.includes(flag));
   return {
-    contains: [...new Set([...fromText, ...fromStatement])],
-    may_contain: flagsInStatement(reading.may_contain_statement),
+    contains,
+    may_contain: mayContain,
     from_text: fromText,
     from_statement: fromStatement,
   };

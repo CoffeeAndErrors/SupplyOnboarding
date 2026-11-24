@@ -4,11 +4,15 @@
 // `facts` object the engine can reason over. Pure, no side effects.
 // ============================================================================
 
-import { CONTAINS_KEYWORDS, CLEAR_TAGS, THRESHOLDS, AVAILABILITY } from "./config";
+import { CLEAR_TAGS, THRESHOLDS, AVAILABILITY } from "./config";
+import { allergensIn, ingredientFlagsIn, ALLERGEN_KEYS, FLAG_KEYS } from "@/lib/food/allergens";
+import { categorise } from "@/lib/food/taxonomy";
+import { isLabelCurrent } from "./verification";
 
 const VALID_AVAILABILITY = new Set(Object.values(AVAILABILITY));
 
 const toNum = (v) => (typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^\d.]/g, "")) || 0);
+const isNum = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
 
 // A declared macro, or null when there is no figure. Deliberately NOT toNum:
 // `parseFloat("") || 0` is exactly how an undeclared macro became a confident
@@ -59,12 +63,23 @@ export function extractFacts(product) {
   // `partial`:      a screening report named some ingredients. Partial by name
   //                 — it can prove presence, never absence.
   // `none`:         nothing beyond the name and tags.
+  //
+  // A label with no reading in LABEL_MAX_AGE_DAYS drops to `partial`: the
+  // recipe may have changed since, so it still proves what it lists and no
+  // longer proves what it leaves out.
   const labelEvidence = product.label?.evidence ?? (product.label?.verified ? "verified" : null);
   const label = labelEvidence ? product.label : null;
-  const ingredientEvidence = labelEvidence || (ingredients.trim() ? "partial" : "none");
+  const ingredientEvidence = label && isLabelCurrent(label.confirmedAt)
+    ? labelEvidence
+    : (label || ingredients.trim() ? "partial" : "none");
   const labelText = label ? String(label.ingredientsText || "").toLowerCase() : "";
 
-  const haystack = [product.name, product.brand, product.category, ingredients, labelText, ...(product.tags || []), ...(product.goalTags || [])]
+  // Not the shelf. A shelf's label is KOI's name for a kind of food, and it
+  // names every kind on it: "Oils & ghee" flagged every cooking oil as dairy (so
+  // no vegan was ever given oil), "Honey, jaggery & sugar" put honey in sugar,
+  // "Flours & atta" put wheat in ragi and besan. What is in a pack is read off
+  // the pack: its name, its ingredients, its label.
+  const haystack = [product.name, product.brand, ingredients, labelText, ...(product.tags || []), ...(product.goalTags || [])]
     .join(" ")
     .toLowerCase();
 
@@ -105,10 +120,27 @@ export function extractFacts(product) {
   const hasTag = (list) => (list || []).some((t) => tags.some((tag) => tag.includes(t)));
 
   // ── infer ingredient/attribute flags ──
-  const contains = new Set();
-  for (const [flag, kws] of Object.entries(CONTAINS_KEYWORDS)) {
-    if (anyKeyword(haystack, kws)) contains.add(flag);
-  }
+  // Allergens come from the allergen graph (lib/food/allergens.js): whole
+  // words, longest ingredient name first, so "peanut butter" is not milk and
+  // "eggless" is not egg. What an ingredient may contain counts as present,
+  // as a may-contain statement does below.
+  const graph = allergensIn(haystack);
+  const contains = new Set([...graph.contains, ...graph.mayContain]);
+  // Every other flag comes from the same graph (food.ingredient_flag and
+  // food.attribute_term): additives raise the preservative, colour, sweetener
+  // and flavour filters (Phase 2.2); meat, honey, caffeine, palm oil and root
+  // vegetables are ingredients; "spicy" is an ingredient or a product word
+  // (Phase 2.4). The substring lists this replaced found tea in "steamed".
+  //
+  // Read without the brand. A brand is a name, not an ingredient: "Sweet Karam
+  // Coffee" put caffeine on its Madras Mixture and Mango Mysore Pak, which kept
+  // them from anyone avoiding caffeine and, with the planner's age rules, from
+  // every child. Allergens above still read the brand: over-reading an
+  // allergen only ever hides a product from someone avoiding it.
+  const productText = [product.name, ingredients, labelText, ...(product.tags || []), ...(product.goalTags || [])]
+    .join(" ")
+    .toLowerCase();
+  for (const flag of ingredientFlagsIn(productText)) contains.add(flag);
 
   // dietary declarations authoritatively CLEAR flags
   const dl = dietary.map((d) => d.toLowerCase());
@@ -128,9 +160,10 @@ export function extractFacts(product) {
   // statement declares, which the extraction step stores as KOI flag keys
   // ("dairy", "tree_nut", …) so they need no second parse here.
   if (label) {
-    for (const [flag, kws] of Object.entries(CONTAINS_KEYWORDS)) {
-      if (anyKeyword(labelText, kws)) contains.add(flag);
-    }
+    const fromLabel = allergensIn(labelText);
+    for (const flag of [...fromLabel.contains, ...fromLabel.mayContain]) contains.add(flag);
+    // And a preservative on the label outranks the brand's "No Preservatives".
+    for (const flag of ingredientFlagsIn(labelText)) contains.add(flag);
     // "May contain" counts as present. It is the brand saying it cannot rule
     // the allergen out, and a shopper avoiding it has asked KOI to rule it out.
     const declaredFlags = [
@@ -138,7 +171,7 @@ export function extractFacts(product) {
       ...(Array.isArray(label.mayContain) ? label.mayContain : []),
     ];
     for (const declared of declaredFlags) {
-      if (typeof declared === "string" && declared in CONTAINS_KEYWORDS) contains.add(declared);
+      if (typeof declared === "string" && (ALLERGEN_KEYS.includes(declared) || FLAG_KEYS.includes(declared))) contains.add(declared);
     }
   }
 
@@ -158,16 +191,27 @@ export function extractFacts(product) {
     else contains.delete("high_sodium");
   }
 
-  // peanut/tree_nut split (tree_nut isn't an avoid flag but keep peanut precise)
+  // A name that runs peanut into another word ("PeanutCrunch") still counts.
+  // Over-reading an allergen only ever hides a product from someone avoiding it.
   if (haystack.includes("peanut") || haystack.includes("groundnut")) contains.add("peanut");
 
   return {
     id: product.id,
     name: product.name,
     brand: product.brand,
-    category: product.category || "Snacks",
+    // The aisle from KOI's category tree, or null. Never a default: an unplaced
+    // product called "Snacks" would join snack shelves it was never placed on.
+    category: product.category || null,
+    // The category-tree key, which decides meal occasions (lib/food/taxonomy.js).
+    // Live products carry it; anything else is placed the same way here.
+    categoryKey: product.categoryKey ?? categorise({ name: product.name, categoryL1: product.category })?.key ?? null,
     price: toNum(product.price),
-    trust: toNum(product.score),
+    // The KOI screening score, or null when KOI has not screened it. NOT
+    // toNum: that turned "never screened" into a score of zero, which reads as
+    // "screened, and it is awful" everywhere a number is read. The two are not
+    // the same thing and the shopper is owed the difference.
+    trust: isNum(product.score) ? Number(product.score) : null,
+    screened: isNum(product.score),
     recommended: !!product.recommended,
     betterThan: toNum(product.betterThanPercentage),
     macros,
@@ -176,6 +220,8 @@ export function extractFacts(product) {
     goalTags: product.goalTags || [],
     contains,
     ingredientEvidence,
+    // Readings that agreed on the allergens; see provesAllergenAbsence.
+    readAgreement: label ? label.readAgreement ?? null : null,
     haystack,
     // Tri-state, never inferred. An unchecked product is `unknown`, not in
     // stock — defaulting the other way turns absence of evidence into a claim.

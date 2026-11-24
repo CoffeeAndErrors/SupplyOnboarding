@@ -171,8 +171,13 @@ export const FOODS_AVOID = [
   { key: "eggs", label: "Eggs", emoji: "🥚", flag: "egg", kind: "allergen", mode: "hard" },
   { key: "fish", label: "Fish", emoji: "🐟", flag: "fish", kind: "allergen", mode: "hard" },
   { key: "shellfish", label: "Shellfish", emoji: "🦐", flag: "shellfish", kind: "allergen", mode: "hard" },
-  { key: "red_meat", label: "Red Meat", emoji: "🥩", flag: "meat", kind: "ingredient", mode: "hard" },
+  // `red_meat`, not `meat`: the broader flag removed chicken for a shopper who
+  // only avoids red meat. Diets still exclude all `meat` (DIET_EXCLUSIONS).
+  { key: "red_meat", label: "Red Meat", emoji: "🥩", flag: "red_meat", kind: "ingredient", mode: "hard" },
   { key: "caffeine", label: "Caffeine", emoji: "☕", flag: "caffeine", kind: "ingredient", mode: "hard" },
+  // The allium flag (00056) reached only the fasting diet; "no onion-garlic"
+  // is its own rule for many households, Jain or not (00067).
+  { key: "onion_garlic", label: "Onion & garlic", emoji: "🧅", flag: "allium", kind: "ingredient", mode: "hard" },
   { key: "artificial_sweeteners", label: "Artificial Sweeteners", emoji: "🧪", flag: "artificial_sweetener", kind: "attribute", mode: "soft" },
   { key: "palm_oil", label: "Palm Oil", emoji: "🌴", flag: "palm_oil", kind: "ingredient", mode: "soft" },
   { key: "refined_sugar", label: "Refined Sugar", emoji: "🍬", flag: "refined_sugar", kind: "attribute", mode: "soft" },
@@ -190,6 +195,9 @@ export const DIET_TYPES = [
   { key: "jain", label: "Jain", emoji: "🙏" },
   { key: "non_vegetarian", label: "Non-Vegetarian", emoji: "🍗" },
   { key: "pescatarian", label: "Pescatarian", emoji: "🐟" },
+  // A day, not a way of living: offered on the plan page as a diet for this
+  // plan only, never as a saved profile (00056).
+  { key: "fasting", label: "Fasting (vrat)", emoji: "🕉️", forOnePlanOnly: true },
 ];
 
 export const MEALS = [
@@ -217,39 +225,12 @@ export const COOKING = [
   { key: "any", label: "No Preference", emoji: "🤷" },
 ];
 
-// ── Ingredient flag inference: flag → keyword signals (name/tags/ingredients) ──
-export const CONTAINS_KEYWORDS = Object.freeze({
-  dairy: ["milk", "butter", "ghee", "yogurt", "curd", "paneer", "cheese", "khoya", "cream", "whey"],
-  egg: ["egg"],
-  meat: ["chicken", "mutton", "beef", "pork", "meat", "lamb"],
-  fish: ["fish", "tuna", "salmon", "anchovy"],
-  shellfish: ["prawn", "shrimp", "crab", "lobster", "shellfish"],
-  peanut: ["peanut", "groundnut"],
-  // Hindi names too, because Indian labels print them ("kaju", "badam"), and
-  // "dry fruit" because a dry-fruit mix almost always carries almonds or
-  // cashews. Over-detection only ever removes a product for a shopper who
-  // avoids tree nuts; under-detection is the failure that matters.
-  tree_nut: [
-    "almond", "cashew", "walnut", "hazelnut", "pistachio", "pecan", "macadamia",
-    "brazil nut", "pine nut", "chilgoza", "marzipan", "badam", "kaju", "akhrot",
-    "pista", "dry fruit", "dryfruit",
-  ],
-  soy: ["soy", "soya", "tofu"],
-  gluten: ["wheat", "maida", "bread", "pasta", "gluten", "barley", "rava", "suji"],
-  honey: ["honey"],
-  caffeine: ["coffee", "tea", "caffeine", "espresso"],
-  spicy: ["madras", "spicy", "chilli", "chili", "masala", "mixture", "chivda", "peri"],
-  palm_oil: ["palm oil", "palmolein"],
-  // What a Jain diet excludes beyond meat, fish and egg: vegetables that grow
-  // underground. Ginger is on the list although some Jains accept it dried —
-  // a hard diet rule errs toward excluding. Hindi names for the same reason
-  // tree_nut carries them.
-  root_veg: [
-    "onion", "garlic", "potato", "carrot", "beetroot", "radish", "turnip",
-    "sweet potato", "yam", "ginger", "shallot", "aloo", "pyaz", "pyaaz",
-    "lahsun", "lehsun", "mooli", "arbi",
-  ],
-});
+// ── Flags a product raises ──
+// Not here any more. Allergens (Phase 2.1), additive filters (2.2) and meat,
+// red meat, honey, caffeine, spicy, palm oil and root vegetables (2.4) all come
+// from the ingredient graph, compiled into lib/food/allergens.js, which matches
+// whole names instead of substrings. What a Jain diet excludes as root_veg,
+// ginger included, is recorded on the ingredients in food.ingredient_flag.
 
 // "Free-from" tag signals that CLEAR a flag even if a keyword appears.
 export const CLEAR_TAGS = Object.freeze({
@@ -269,7 +250,13 @@ export const DIET_EXCLUSIONS = Object.freeze({
   vegan: ["dairy", "egg", "meat", "fish", "shellfish", "honey"],
   vegetarian: ["meat", "fish", "shellfish", "egg"],
   eggetarian: ["meat", "fish", "shellfish"],
-  jain: ["meat", "fish", "shellfish", "egg", "honey", "root_veg"],
+  jain: ["meat", "fish", "shellfish", "egg", "honey", "root_veg", "fungi"],
+  // A fasting (vrat/phalahar) day, chosen for one plan rather than kept on a
+  // profile. Not "eat less": a different list of permitted foods. Grains,
+  // pulses, common salt, onion and garlic are out — and buckwheat, amaranth,
+  // water chestnut, potato, dairy, fruit, nuts and rock salt are in, which is
+  // why allium is a flag of its own and not folded into root_veg (00056).
+  fasting: ["grain", "pulse", "common_salt", "allium", "meat", "fish", "shellfish", "egg"],
   pescatarian: ["meat"],
   non_vegetarian: [],
 });
@@ -282,16 +269,8 @@ export const DIET_EXCLUSIONS = Object.freeze({
 // list can hide garlic, and "milk solids" can be missing from one entirely, so
 // without a verified list — or the brand's own declaration — KOI says the diet
 // is not verified rather than implying it fits.
-export const LABEL_VERIFIED_DIETS = Object.freeze(["vegan", "jain"]);
+export const LABEL_VERIFIED_DIETS = Object.freeze(["vegan", "jain", "fasting"]);
 
-// meal → matching categories / keywords
-export const MEAL_MATCH = Object.freeze({
-  breakfast: { categories: ["Breakfast"], keywords: ["oats", "granola", "muesli", "cookie", "honey", "coffee", "cereal"] },
-  lunch: { categories: ["Pantry", "Meals"], keywords: ["rice", "meal", "mixture"] },
-  dinner: { categories: ["Pantry", "Meals"], keywords: ["rice", "meal"] },
-  snacks: { categories: ["Snacks"], keywords: ["snack", "chivda", "mixture", "cookie", "nut", "crispies", "almond", "bar"] },
-  office_snacks: { categories: ["Snacks"], keywords: ["snack", "nut", "cookie", "bar", "crispies"] },
-  late_night: { categories: ["Snacks"], keywords: ["cookie", "chocolate", "nut"] },
-  pre_workout: { categories: ["Beverages"], keywords: ["coffee", "energy"] },
-  post_workout: { categories: ["Snacks"], keywords: ["protein", "almond", "nut", "bar", "crispies"] },
-});
+// Which meal occasions a product serves is no longer a table here: since
+// Phase 2.4 it comes from the product's category (food.category_occasion,
+// lib/food/taxonomy.js#servesOccasion).

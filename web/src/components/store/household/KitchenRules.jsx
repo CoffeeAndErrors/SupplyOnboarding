@@ -1,0 +1,279 @@
+"use client";
+
+// ============================================================================
+// The kitchen's own rules (migration 00052, plan §9.10.3 Tier 1)
+//
+// Standing facts about a household rather than about this week: brands it will
+// not buy and brands it likes, how much of a pack may go unfinished, how much
+// of last week's shopping may come back, and what is already in the cupboard.
+//
+// Each one is saved on its own, the moment it is changed, because a settings
+// page with a Save button at the bottom loses work when someone leaves. The
+// plan reads them next time it solves; nothing here changes a plan already on
+// screen.
+// ============================================================================
+
+import { useState } from "react";
+import { Plus, X } from "lucide-react";
+
+const LABEL = "text-[11px] font-semibold uppercase tracking-[0.08em] text-koi-muted";
+const HINT = "mt-1 text-[11.5px] text-koi-muted";
+const CARD = "rounded-3xl bg-white/70 p-5 ring-1 ring-inset ring-koi-forest/8";
+
+/**
+ * What to protect first (00054, model.js PRIORITY), as answers rather than
+ * weights. A shopper ranks things by saying what kind of shopper they are; the
+ * numbers underneath are KOI's business, and showing them would only invite
+ * fiddling with a dial nobody can reason about.
+ */
+export const PRIORITY_PRESETS = Object.freeze([
+  { key: "koi", label: "Let KOI decide", hint: "Targets first, then the budget", priorities: [] },
+  { key: "budget", label: "Stay in budget", hint: "Rather go a little short than overspend", priorities: ["budget", "targets", "less_processed", "familiar", "variety"] },
+  { key: "targets", label: "Hit the targets", hint: "Spend more before anyone goes short", priorities: ["targets", "budget", "less_processed", "familiar", "variety"] },
+  { key: "quality", label: "The best food we can afford", hint: "Better-screened food comes first", priorities: ["less_processed", "targets", "budget", "familiar", "variety"] },
+  { key: "familiar", label: "Keep it familiar", hint: "What we already buy, week to week", priorities: ["familiar", "targets", "budget", "less_processed", "variety"] },
+  { key: "variety", label: "Something different", hint: "More products, fewer repeats of each", priorities: ["variety", "targets", "budget", "less_processed", "familiar"] },
+]);
+
+/** Which preset a stored order is, by its first answer. */
+export const presetFor = (priorities = []) => {
+  const first = (priorities ?? [])[0];
+  return PRIORITY_PRESETS.find((p) => p.priorities[0] === first)?.key ?? "koi";
+};
+
+export const WASTE_TOLERANCES = Object.freeze([
+  { key: "none", label: "Nothing left over", hint: "Packs sized by what you normally eat" },
+  { key: "some", label: "A little", hint: "The usual" },
+  { key: "any", label: "Doesn't matter", hint: "Buy what fits the targets" },
+]);
+
+/**
+ * How processed a household will go (NOVA, 00057).
+ *
+ * The groups are named by what they are rather than by their number: "group 3"
+ * means nothing to a shopper, and a number they cannot reason about is a dial,
+ * not a setting.
+ */
+/**
+ * Which kitchen a household leans towards (00061).
+ *
+ * A nudge between shelves that belong to one, never a refusal — and most
+ * shelves belong to neither, because rice and dal are food rather than Indian
+ * food. Saying "no leaning" is the commonest honest answer.
+ */
+export const CUISINE_LEANINGS = Object.freeze([
+  { key: "", label: "No leaning", hint: "KOI does not favour either" },
+  { key: "indian", label: "Indian", hint: "Namkeen, Indian sweets, masalas" },
+  { key: "global", label: "Continental", hint: "Cereals, chocolate, pasta" },
+]);
+
+export const PROCESSING_CEILINGS = Object.freeze([
+  { key: "", label: "No limit", hint: "KOI does not rule anything out for being processed" },
+  { key: "1", label: "Whole foods only", hint: "NOVA 1: unprocessed or minimally processed" },
+  { key: "2", label: "Add basic ingredients", hint: "NOVA 2: oils, flours, sugar, salt" },
+  { key: "3", label: "Nothing ultra-processed", hint: "NOVA 3: processed, but not formulations" },
+]);
+
+export const REPEAT_TOLERANCES = Object.freeze([
+  { key: "low", label: "Something different", hint: "Last week's packs cost more" },
+  { key: "usual", label: "No preference", hint: "The usual" },
+  { key: "high", label: "The same is fine", hint: "Last week's packs cost less" },
+]);
+
+/** One row of choices, where choosing the chosen one does nothing. */
+function Choices({ name, options, value, onChange, busy }) {
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5" role="group" aria-label={name}>
+      {options.map((option) => {
+        const on = value === option.key;
+        return (
+          <button key={option.key} type="button" aria-pressed={on} disabled={busy} onClick={() => onChange(option.key)}
+                  title={option.hint}
+                  className={`rounded-full border px-2.5 py-1 text-[11.5px] disabled:opacity-50 ${on ? "border-koi-green bg-koi-green/10 font-semibold text-koi-ink" : "border-koi-forest/10 bg-white text-koi-muted"}`}>
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * A list of words the shopper adds to and takes from.
+ *
+ * `known` is what KOI can actually match the word against. It is offered as
+ * suggestions, and a word that matches none of it is still saved — with a line
+ * saying so, because a brand rule that quietly does nothing is worse than one
+ * that says it is waiting for a shelf that carries it.
+ */
+function Words({ id, label, hint, words, placeholder, onAdd, onRemove, busy, known = null }) {
+  const [typed, setTyped] = useState("");
+  const add = () => {
+    const word = typed.trim();
+    if (!word) return;
+    setTyped("");
+    onAdd(word);
+  };
+  const same = (a, b) => String(a).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim()
+    === String(b).toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
+  const unknown = known ? words.filter((w) => !known.some((k) => same(k, w.label ?? w))) : [];
+  return (
+    <div>
+      <span className={LABEL}>{label}</span>
+      <p className={HINT}>{hint}</p>
+      {words.length > 0 && (
+        <ul className="mt-1.5 flex flex-wrap gap-1.5">
+          {words.map((word) => (
+            <li key={word.key ?? word}>
+              <span className="inline-flex items-center gap-1 rounded-full border border-koi-forest/10 bg-koi-forest/[0.04] py-1 pl-2.5 pr-1 text-[11.5px] text-koi-ink">
+                {word.label ?? word}
+                <button type="button" aria-label={`Remove ${word.label ?? word}`} disabled={busy}
+                        onClick={() => onRemove(word)} className="rounded-full p-0.5 text-koi-muted hover:text-koi-red disabled:opacity-50">
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {unknown.length > 0 && (
+        <p className="mt-1 text-[11.5px] text-koi-amber-ink">
+          KOI doesn&apos;t stock {unknown.map((w) => w.label ?? w).join(", ")} yet. Saved, and it applies the day the shop does.
+        </p>
+      )}
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <input id={id} value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={placeholder} maxLength={80}
+               list={known ? `${id}-known` : undefined}
+               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+               className="min-w-0 flex-1 rounded-xl border border-koi-forest/15 bg-white px-3 py-1.5 text-[12.5px]" />
+        {known && (
+          <datalist id={`${id}-known`}>
+            {known.map((brand) => <option key={brand} value={brand} />)}
+          </datalist>
+        )}
+        <button type="button" onClick={add} disabled={busy || !typed.trim()}
+                className="inline-flex items-center gap-1 rounded-xl border border-koi-forest/15 px-2.5 py-1.5 text-[12px] font-semibold text-koi-ink disabled:opacity-40">
+          <Plus className="h-3.5 w-3.5" /> Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * @param {object} props
+ * @param {object} props.household the row: refused_brands, preferred_brands, waste_tolerance, repeat_tolerance
+ * @param {Array} props.pantry rows of household_pantry: { id, label, sku_id }
+ * @param {(patch: object) => Promise<void>} props.onSaveHousehold
+ * @param {(label: string) => Promise<void>} props.onAddPantry
+ * @param {(row: object) => Promise<void>} props.onRemovePantry
+ * @param {string[]} props.brands the brand names KOI carries, for suggestions
+ * @param {number|null} props.knownProcessing how many products KOI knows the processing of
+ * @param {boolean} props.busy
+ */
+export default function KitchenRules({ household, pantry = [], brands = [], knownProcessing = null, onSaveHousehold, onAddPantry, onRemovePantry, busy = false }) {
+  if (!household) return null;
+  const refused = household.refused_brands ?? [];
+  const preferred = household.preferred_brands ?? [];
+
+  const save = (patch) => onSaveHousehold(patch);
+  const withoutBrand = (list, brand) => list.filter((b) => b !== brand);
+  // A brand cannot be liked and refused at once: the newer answer wins.
+  const addBrand = (which, brand) => {
+    const other = which === "refused_brands" ? "preferred_brands" : "refused_brands";
+    const lists = { refused_brands: refused, preferred_brands: preferred };
+    if (lists[which].some((b) => b.toLowerCase() === brand.toLowerCase())) return Promise.resolve();
+    return save({
+      [which]: [...lists[which], brand],
+      [other]: lists[other].filter((b) => b.toLowerCase() !== brand.toLowerCase()),
+    });
+  };
+
+  return (
+    <section className={CARD}>
+      <p className="text-[12px] font-semibold text-koi-ink">Your kitchen</p>
+      <p className="mt-0.5 text-[11.5px] text-koi-muted">
+        How you shop, rather than what anyone eats. Every plan from here on follows these; the plan on screen is left alone.
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-x-8 gap-y-5 md:grid-cols-2">
+      <div>
+        <span className={LABEL}>What matters most</span>
+        <Choices name="What matters most" options={PRIORITY_PRESETS} busy={busy}
+                 value={presetFor(household.priorities)}
+                 onChange={(key) => save({ priorities: PRIORITY_PRESETS.find((p) => p.key === key)?.priorities ?? [] })} />
+        <p className={HINT}>
+          {PRIORITY_PRESETS.find((p) => p.key === presetFor(household.priorities))?.hint}. KOI solves for this first and
+          fits everything else underneath it.
+        </p>
+      </div>
+
+      <div>
+        <span className={LABEL}>Leftovers</span>
+        <Choices name="Leftovers" options={WASTE_TOLERANCES} busy={busy}
+                 value={household.waste_tolerance ?? "some"} onChange={(waste_tolerance) => save({ waste_tolerance })} />
+      </div>
+
+      <div>
+        <span className={LABEL}>Next week</span>
+        <Choices name="Next week" options={REPEAT_TOLERANCES} busy={busy}
+                 value={household.repeat_tolerance ?? "usual"} onChange={(repeat_tolerance) => save({ repeat_tolerance })} />
+      </div>
+
+      <Words id="refused-brands" label="Brands to skip" busy={busy} words={refused}
+             hint="Nothing from these is ever planned for you."
+             placeholder="A brand you won't buy" known={brands}
+             onAdd={(brand) => addBrand("refused_brands", brand)}
+             onRemove={(brand) => save({ refused_brands: withoutBrand(refused, brand) })} />
+
+      <Words id="preferred-brands" label="Brands you like" busy={busy} words={preferred}
+             hint="Chosen where the rest is equal. It never decides against a target."
+             placeholder="A brand you reach for" known={brands}
+             onAdd={(brand) => addBrand("preferred_brands", brand)}
+             onRemove={(brand) => save({ preferred_brands: withoutBrand(preferred, brand) })} />
+
+      <div>
+        <span className={LABEL}>Kitchen</span>
+        <Choices name="Kitchen" options={CUISINE_LEANINGS} busy={busy}
+                 value={household.cuisine_leaning ?? ""}
+                 onChange={(key) => save({ cuisine_leaning: key === "" ? null : key })} />
+        <p className={HINT}>
+          Only tips the balance between shelves that belong to one kitchen. Rice, dal and atta belong to neither, so
+          most of a basket is untouched — and nothing is ever refused for being the wrong cuisine.
+        </p>
+      </div>
+
+      <div>
+        <span className={LABEL}>How processed</span>
+        <Choices name="How processed" options={PROCESSING_CEILINGS} busy={busy}
+                 value={household.processing_ceiling === null || household.processing_ceiling === undefined ? "" : String(household.processing_ceiling)}
+                 onChange={(key) => save({ processing_ceiling: key === "" ? null : Number(key) })} />
+        <p className={HINT}>
+          KOI can only rule out a product whose ingredient list it has read in full — {knownProcessing ?? "few"} of the
+          shop so far. The rest are neither refused nor called clean, and every plan says how many it could not tell.
+        </p>
+      </div>
+
+      <div>
+        <span className={LABEL}>Cold storage</span>
+        <label className="mt-1.5 flex items-center gap-2.5 text-[12.5px] text-koi-ink">
+          <input type="checkbox" checked={Boolean(household.shelf_stable_only)} disabled={busy}
+                 onChange={(e) => save({ shelf_stable_only: e.target.checked })}
+                 className="h-3.5 w-3.5 accent-koi-forest" />
+          Nothing that needs a fridge
+        </label>
+        <p className={HINT}>
+          Everything KOI sells today is ambient, so this changes nothing yet. It will the day chilled or frozen arrives.
+        </p>
+      </div>
+
+      <Words id="pantry" label="Already in the cupboard" busy={busy}
+             words={pantry.map((row) => ({ key: row.id, label: row.label ?? row.name ?? "Something", row }))}
+             hint="KOI plans around these instead of buying them again. Take one off when it runs out."
+             placeholder="Rice, atta, oats…"
+             onAdd={(label) => onAddPantry(label)}
+             onRemove={(word) => onRemovePantry(word.row)} />
+      </div>
+    </section>
+  );
+}

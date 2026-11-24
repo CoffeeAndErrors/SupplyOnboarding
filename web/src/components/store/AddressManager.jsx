@@ -5,7 +5,7 @@ import { Plus, MapPin, Check, Trash2, Edit2, AlertCircle, User as UserIcon } fro
 import { getSupabaseClient } from "@/lib/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import LocationModal from "@/components/store/LocationModal";
-import LoginSheet from "@/components/auth/LoginSheet";
+import { useLoginUi } from "@/store/loginUiStore";
 
 export default function AddressManager({ onSelect, selectedAddressId }) {
   const { user } = useAuth();
@@ -14,7 +14,10 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
   const [error, setError] = useState(null);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  // The store's one sign-in sheet. It used to be a copy here with `next`
+  // hard-wired to /store/checkout, so signing in from Profile's address book
+  // sent the shopper to checkout. Signed in, this component re-renders itself.
+  const openLogin = useLoginUi((s) => s.openLogin);
   const [editData, setEditData] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -130,17 +133,16 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
   if (!user) {
     return (
       <>
-        <div className="p-8 bg-[#F2F6EC] rounded-xl text-center border-2 border-dashed border-[#E2E8D8]">
-          <UserIcon className="w-8 h-8 text-[#5A6B5A] mx-auto mb-3 opacity-50" />
-          <p className="text-[#5A6B5A] font-medium mb-4">Please log in to manage your addresses.</p>
+        <div className="p-8 bg-koi-bg rounded-xl text-center border-2 border-dashed border-koi-forest/10">
+          <UserIcon className="w-8 h-8 text-koi-muted mx-auto mb-3 opacity-50" />
+          <p className="text-koi-muted font-medium mb-4">Please log in to manage your addresses.</p>
           <button 
-            onClick={() => setIsLoginOpen(true)}
-            className="px-5 py-2.5 bg-[#0E4032] text-white rounded-xl font-bold hover:bg-[#155A47] transition-colors inline-flex items-center gap-2"
+            onClick={() => openLogin()}
+            className="px-5 py-2.5 bg-koi-forest text-white rounded-xl font-bold hover:bg-koi-primary transition-colors inline-flex items-center gap-2"
           >
             Login or Signup
           </button>
         </div>
-        <LoginSheet open={isLoginOpen} onOpenChange={setIsLoginOpen} next="/store/checkout" />
       </>
     );
   }
@@ -148,10 +150,10 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-bold text-[#0E4032]" style={{ fontFamily: "var(--font-koi-heading)" }}>Delivery Addresses</h3>
+        <h3 className="text-lg font-bold text-koi-ink">Delivery Addresses</h3>
         <button
           onClick={openNewForm}
-          className="flex items-center gap-2 text-sm font-semibold text-[#0E4032] hover:bg-[#EDF2E6] px-3 py-1.5 rounded-lg transition-colors"
+          className="flex items-center gap-2 text-sm font-semibold text-koi-ink hover:bg-koi-tint px-3 py-1.5 rounded-lg transition-colors"
         >
           <Plus className="w-4 h-4" />
           Add New
@@ -159,7 +161,7 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 p-3 bg-[#C94B40]/10 text-[#C94B40] rounded-xl text-sm font-medium">
+        <div className="flex items-center gap-2 p-3 bg-koi-red/10 text-koi-red rounded-xl text-sm font-medium">
           <AlertCircle className="w-4 h-4" />
           {error}
         </div>
@@ -167,13 +169,13 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
 
       {loading ? (
         <div className="animate-pulse space-y-3">
-          <div className="h-24 bg-[#E2E8D8] rounded-xl"></div>
-          <div className="h-24 bg-[#E2E8D8] rounded-xl"></div>
+          <div className="h-24 bg-koi-forest/10 rounded-xl"></div>
+          <div className="h-24 bg-koi-forest/10 rounded-xl"></div>
         </div>
       ) : addresses.length === 0 ? (
-        <div className="p-8 text-center border-2 border-dashed border-[#E2E8D8] rounded-xl">
-          <MapPin className="w-8 h-8 text-[#5A6B5A] mx-auto mb-2 opacity-50" />
-          <p className="text-[#5A6B5A]">No saved addresses found.</p>
+        <div className="p-8 text-center border-2 border-dashed border-koi-forest/10 rounded-xl">
+          <MapPin className="w-8 h-8 text-koi-muted mx-auto mb-2 opacity-50" />
+          <p className="text-koi-muted">No saved addresses found.</p>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
@@ -184,26 +186,26 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
                 key={addr.id}
                 className={`relative p-4 rounded-xl border-2 transition-all cursor-pointer ${
                   isSelected
-                    ? "border-[#0E4032] bg-[#F2F6EC]"
-                    : "border-[#E2E8D8] bg-white hover:border-[#0E4032]/30"
+                    ? "border-koi-forest bg-koi-bg"
+                    : "border-koi-forest/10 bg-white hover:border-koi-forest/30"
                 }`}
                 onClick={() => onSelect && onSelect(addr)}
               >
                 {isSelected && (
-                  <div className="absolute top-4 right-4 text-[#0E4032]">
+                  <div className="absolute top-4 right-4 text-koi-ink">
                     <Check className="w-5 h-5" />
                   </div>
                 )}
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="px-2 py-0.5 text-xs font-bold uppercase tracking-wider bg-[#EDF2E6] text-[#0E4032] rounded">
+                  <span className="px-2 py-0.5 text-xs font-bold uppercase tracking-wider bg-koi-tint text-koi-ink rounded">
                     {addr.label}
                   </span>
                   {addr.is_default && (
-                    <span className="text-xs font-semibold text-[#5A6B5A]">Default</span>
+                    <span className="text-xs font-semibold text-koi-muted">Default</span>
                   )}
                 </div>
-                <div className="text-sm space-y-1 text-[#5A6B5A] pr-8">
-                  <p className="font-bold text-[#0E4032]">{addr.full_name}</p>
+                <div className="text-sm space-y-1 text-koi-muted pr-8">
+                  <p className="font-bold text-koi-ink">{addr.full_name}</p>
                   <p>{addr.house_number ? `${addr.house_number}, ` : ""}{addr.street}</p>
                   {addr.landmark && <p>Landmark: {addr.landmark}</p>}
                   <p>
@@ -212,13 +214,13 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
                   <p>Phone: {addr.phone}</p>
                 </div>
                 
-                <div className="flex items-center gap-4 mt-4 pt-4 border-t border-[#E2E8D8]">
+                <div className="flex items-center gap-4 mt-4 pt-4 border-t border-koi-forest/10">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleEdit(addr);
                     }}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-[#5A6B5A] hover:text-[#0E4032] transition-colors"
+                    className="flex items-center gap-1.5 text-xs font-semibold text-koi-muted hover:text-koi-ink transition-colors"
                   >
                     <Edit2 className="w-3.5 h-3.5" />
                     Edit
@@ -228,7 +230,7 @@ export default function AddressManager({ onSelect, selectedAddressId }) {
                       e.stopPropagation();
                       handleDelete(addr.id);
                     }}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-[#C94B40] hover:opacity-80 transition-opacity"
+                    className="flex items-center gap-1.5 text-xs font-semibold text-koi-red hover:opacity-80 transition-opacity"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     Delete

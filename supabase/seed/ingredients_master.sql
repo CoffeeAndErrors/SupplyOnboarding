@@ -44,6 +44,13 @@
 -- Idempotent: re-running updates in place and never duplicates.
 --
 -- The table lives in the `food` schema since migration 00019, not `public`.
+--
+-- Since migration 00035 every alias here is also a name in the allergen graph
+-- (food.ingredient_alias). web/scripts/applyIngredientsSeed.mjs adds any new
+-- name to the graph after upserting, and its --check mode reports drift
+-- between this file and the database. After changing names, rebuild the
+-- lexicon (web/scripts/buildAllergenLexicon.mjs) and re-run the label
+-- evaluation, or label reading stays paused.
 -- ============================================================================
 
 INSERT INTO food.ingredients_master
@@ -216,29 +223,29 @@ VALUES
 -- FSSAI labelling rules, not a judgement that the food is unhealthy. Milk is
 -- not risky; milk is an allergen. A copilot needs both facts and only has room
 -- for one column, so the notes carry the distinction.
-('Milk', '["milk","milk solids","milk powder","skimmed milk powder","SMP","dairy","butter","ghee","cream","cheese","curd","paneer","khoya","malai"]', 'allergen', 'caution', FALSE,
+('Milk', '["milk","milk solids","milk powder","skimmed milk powder","SMP","dairy","butter","ghee","cream","cheese","curd","paneer","khoya","malai","yogurt","yoghurt","dahi","lactose","buttermilk","chaas","makhan","chhena","mawa","milk fat","milkfat","lassi","shrikhand"]', 'allergen', 'caution', FALSE,
  'Declarable milk allergen. Also the marker for lactose intolerance, which is highly prevalent in India, and disqualifies a vegan claim.'),
 ('Casein', '["casein","caseinate","sodium caseinate","calcium caseinate","milk protein"]', 'allergen', 'caution', FALSE,
  'Milk protein fraction. Declarable milk allergen even where the word milk does not appear.'),
 ('Whey', '["whey","whey protein","whey protein concentrate","WPC","whey protein isolate","WPI","whey permeate"]', 'allergen', 'caution', FALSE,
  'Milk-derived. Declarable milk allergen; common in protein products where shoppers may not expect it.'),
-('Egg', '["egg","egg white","egg yolk","albumen","albumin","egg powder","liquid egg"]', 'allergen', 'caution', FALSE,
+('Egg', '["egg","egg white","egg yolk","albumen","albumin","egg powder","liquid egg","anda"]', 'allergen', 'caution', FALSE,
  'Declarable egg allergen. Disqualifies vegan and most Indian vegetarian claims.'),
-('Peanut', '["peanut","groundnut","groundnut oil","peanut butter","moongphali","arachis oil"]', 'allergen', 'caution', FALSE,
+('Peanut', '["peanut","groundnut","groundnut oil","peanut butter","moongphali","arachis oil","singdana","shengdana","mungfali","moongfali"]', 'allergen', 'caution', FALSE,
  'Declarable allergen and among the most common causes of food anaphylaxis.'),
-('Tree Nuts', '["tree nuts","almond","badam","cashew","kaju","walnut","akhrot","pistachio","pista","hazelnut","pecan","macadamia","brazil nut"]', 'allergen', 'caution', FALSE,
+('Tree Nuts', '["tree nuts","almond","badam","cashew","kaju","walnut","akhrot","pistachio","pista","hazelnut","pecan","macadamia","brazil nut","pine nut","chilgoza","marzipan","dry fruit","dry fruits","dryfruit","dryfruits","almond butter","cashew butter","almond milk","cashew nut"]', 'allergen', 'caution', FALSE,
  'Declarable allergen group. Distinct from peanut, which is a legume.'),
-('Soya', '["soy","soya","soybean","soya bean","soy protein","soya flour","textured vegetable protein","TVP","tofu"]', 'allergen', 'caution', FALSE,
+('Soya', '["soy","soya","soybean","soya bean","soy protein","soya flour","textured vegetable protein","TVP","tofu","soyabean","soy milk","soya milk","soya chunks"]', 'allergen', 'caution', FALSE,
  'Declarable allergen. Highly refined soybean oil and soy lecithin are usually tolerated but are still declared.'),
-('Wheat', '["wheat","atta","maida","suji","semolina","rava","wheat flour","durum","couscous"]', 'allergen', 'caution', FALSE,
+('Wheat', '["wheat","atta","maida","suji","semolina","rava","wheat flour","durum","couscous","bread","bread crumbs","breadcrumbs","pasta","wholewheat","whole wheat","dalia","daliya","broken wheat","lapsi"]', 'allergen', 'caution', FALSE,
  'Declarable cereal allergen and a gluten source. See the Refined Wheat Flour row for the separate refinement question.'),
-('Gluten', '["gluten","wheat gluten","vital gluten","barley","rye","malt","malt extract","triticale"]', 'allergen', 'caution', FALSE,
+('Gluten', '["gluten","wheat gluten","vital gluten","barley","rye","malt","malt extract","triticale","malted","malted barley","cereals containing gluten"]', 'allergen', 'caution', FALSE,
  'Declarable. Central to coeliac disease and non-coeliac gluten sensitivity. Note barley malt in cereals and drinks is an easily missed source.'),
 ('Sesame', '["sesame","til","gingelly","sesame oil","tahini","sesame seeds"]', 'allergen', 'caution', FALSE,
  'Declarable allergen, common in Indian sweets and snacks.'),
-('Fish', '["fish","fish oil","anchovy","tuna","sardine","fish sauce"]', 'allergen', 'caution', FALSE,
+('Fish', '["fish","fish oil","anchovy","tuna","sardine","fish sauce","salmon","machli","machhli"]', 'allergen', 'caution', FALSE,
  'Declarable allergen. Also disqualifies vegetarian claims.'),
-('Crustacean Shellfish', '["crustacean","shellfish","prawn","shrimp","crab","lobster","krill"]', 'allergen', 'caution', FALSE,
+('Crustacean Shellfish', '["crustacean","shellfish","prawn","shrimp","crab","lobster","krill","jhinga"]', 'allergen', 'caution', FALSE,
  'Declarable allergen and a frequent cause of adult-onset food allergy.'),
 ('Mustard', '["mustard","sarson","rai","mustard oil","mustard seeds","kasundi"]', 'allergen', 'caution', FALSE,
  'Declarable allergen in several jurisdictions and very common in Indian cooking.'),
@@ -246,7 +253,7 @@ VALUES
  'Declarable above 10 ppm. Grouped with allergens by labelling convention though the mechanism is not IgE-mediated.'),
 
 -- ── Refined carbohydrates and sugars ────────────────────────────────────────
-('Refined Wheat Flour', '["maida","refined wheat flour","refined flour","all purpose flour","APF","white flour"]', 'refined_carb', 'caution', FALSE,
+('Refined Wheat Flour', '["maida","refined wheat flour","refined flour","all purpose flour","APF","white flour","noodles","hakka noodles","pav","pav bread"]', 'refined_carb', 'caution', FALSE,
  'Bran and germ removed, so fibre and micronutrients are largely lost and the glycaemic response is higher than wholemeal. Also a wheat allergen and gluten source.'),
 ('Refined Sugar', '["sugar","refined sugar","white sugar","sucrose","cane sugar","chini"]', 'sugar', 'caution', FALSE,
  'Free sugar. The WHO conditional recommendation is under 5 percent of energy. Relevant to added-sugar limits regardless of source.'),
@@ -272,7 +279,7 @@ VALUES
 -- ── Fats and oils ───────────────────────────────────────────────────────────
 ('Palm Oil', '["palm oil","palmolein","refined palmolein","palm kernel oil","palm fat","vegetable fat (palm)"]', 'fat_oil', 'caution', FALSE,
  'High in palmitic acid, a saturated fat that raises LDL. Dominant in Indian processed food. Deforestation is a separate and legitimate reason a brand may exclude it.'),
-('Vanaspati', '["vanaspati","hydrogenated vegetable oil","vanaspati ghee","dalda"]', 'fat_oil', 'risky', FALSE,
+('Vanaspati', '["vanaspati","hydrogenated vegetable oil","vanaspati ghee","dalda","vegetable ghee"]', 'fat_oil', 'risky', FALSE,
  'Historically the main industrial trans fat source in India. Now bound by the 2 percent trans fat limit, so modern product is fully hydrogenated and highly saturated rather than trans-rich.'),
 ('Interesterified Fat', '["interesterified fat","interesterified vegetable fat"]', 'fat_oil', 'caution', FALSE,
  'The common replacement for partially hydrogenated fat. Avoids trans fat; long-term health data is thinner than for the fats it replaced.'),
@@ -294,9 +301,9 @@ VALUES
 -- ── Whole foods and recognised-good ingredients ────────────────────────────
 -- A knowledge base that only knows what is wrong cannot recognise what is
 -- right, and a copilot that can only warn is not much use to a health brand.
-('Whole Wheat Flour', '["whole wheat flour","atta","whole meal flour","chakki atta","gehun atta"]', 'whole_food', 'safe', FALSE,
+('Whole Wheat Flour', '["whole wheat flour","atta","whole meal flour","chakki atta","gehun atta","wholewheat flour"]', 'whole_food', 'safe', FALSE,
  'Bran and germ retained. Still a wheat allergen and gluten source.'),
-('Oats', '["oats","rolled oats","steel cut oats","oat flour","jai"]', 'whole_food', 'safe', FALSE,
+('Oats', '["oats","rolled oats","steel cut oats","oat flour","jai","oat milk"]', 'whole_food', 'safe', FALSE,
  'Beta-glucan soluble fibre with an authorised cholesterol-lowering role. Frequently cross-contaminated with gluten unless certified.'),
 ('Ragi', '["ragi","finger millet","nachni","ragi flour"]', 'whole_food', 'safe', FALSE,
  'Millet, notably high in calcium, naturally gluten free.'),
@@ -308,7 +315,7 @@ VALUES
  'Complete protein pseudocereal, naturally gluten free.'),
 ('Brown Rice', '["brown rice","unpolished rice"]', 'whole_food', 'safe', FALSE,
  'Bran retained, so more fibre and a lower glycaemic response than polished rice.'),
-('Chickpea', '["chickpea","chana","besan","gram flour","kabuli chana","chana dal"]', 'whole_food', 'safe', FALSE,
+('Chickpea', '["chickpea","chana","besan","gram flour","kabuli chana","chana dal","kala chana","black chana","chole","roasted gram","bengal gram"]', 'whole_food', 'safe', FALSE,
  'Legume protein and fibre. Besan is a common gluten-free flour.'),
 ('Lentils', '["lentil","dal","masoor","moong","toor","urad","arhar"]', 'whole_food', 'safe', FALSE,
  'Staple Indian protein and fibre source.'),
@@ -397,7 +404,114 @@ VALUES
 ('Cocoa Butter', '["cocoa butter"]', 'fat_oil', 'caution', FALSE,
  'Highly saturated, though its stearic acid fraction has a smaller LDL effect than palmitic acid.'),
 ('Inulin', '["inulin","chicory root fibre","chicory inulin","fructooligosaccharide","FOS"]', 'whole_food', 'caution', FALSE,
- 'Prebiotic soluble fibre. Genuinely beneficial, but causes bloating at higher intakes and is often added to inflate a fibre claim.')
+ 'Prebiotic soluble fibre. Genuinely beneficial, but causes bloating at higher intakes and is often added to inflate a fibre claim.'),
+
+-- ── Added with the allergen graph (migration 00035) ─────────────────────────
+-- So a longer name is found before a misleading shorter one: coconut milk is
+-- not dairy, and sunflower lecithin is not soy.
+('Coconut Milk', '["coconut milk","coconut milk powder","coconut milk solids","coconut cream"]', 'whole_food', 'safe', FALSE,
+ 'Plant milk. Not a dairy allergen, despite the word.'),
+('Sunflower Lecithin', '["sunflower lecithin"]', 'emulsifier', 'safe', FALSE,
+ 'Lecithin from sunflower seed. Not a soy allergen.'),
+
+-- ── Flavouring classes (migration 00037) ────────────────────────────────────
+-- The classes FSSAI makes a pack declare. Artificial flavouring substances
+-- raise the "artificial flavours" shopper filter; nature identical ones do not.
+('Artificial Flavouring Substances', '["artificial flavouring substances","artificial flavoring substances","artificial flavouring","artificial flavoring","artificial flavour","artificial flavours","artificial flavor","artificial flavors"]', 'flavouring', 'caution', FALSE,
+ 'FSSAI labelling class, declared as "Contains added flavour (Artificial flavouring substances)".'),
+('Nature Identical Flavouring Substances', '["nature identical flavouring substances","nature identical flavoring substances","nature identical flavouring","nature identical flavour","nature identical flavours"]', 'flavouring', 'safe', FALSE,
+ 'Made to be chemically identical to natural flavour molecules. FSSAI labels them apart from artificial flavours, and KOI does not count them as artificial.'),
+
+-- ── Meat, caffeine, chilli and root vegetables (migration 00041) ────────────
+-- The ingredients the meat, red meat, caffeine, spicy and root vegetable flags
+-- need, which CONTAINS_KEYWORDS used to find as substrings.
+('Chicken', '["chicken"]', 'whole_food', 'safe', FALSE, 'Meat.'),
+('Mutton', '["mutton","goat meat"]', 'whole_food', 'safe', FALSE, 'Red meat.'),
+('Beef', '["beef"]', 'whole_food', 'safe', FALSE, 'Red meat.'),
+('Pork', '["pork","bacon","ham"]', 'whole_food', 'safe', FALSE, 'Red meat.'),
+('Lamb', '["lamb"]', 'whole_food', 'safe', FALSE, 'Red meat.'),
+('Meat', '["meat","meat extract"]', 'whole_food', 'safe', FALSE, 'Meat of an unnamed animal.'),
+('Gelatin', '["gelatin","gelatine"]', 'thickener', 'caution', FALSE, 'Made from animal skin and bone: not vegetarian.'),
+('Chilli', '["chilli","chili","red chilli","green chilli","chilli powder","red chilli powder","chilli flakes","mirchi","lal mirch","kashmiri chilli","cayenne"]', 'whole_food', 'safe', FALSE, 'Makes a product spicy.'),
+('Coffee', '["coffee","instant coffee","coffee powder","espresso","coffee extract"]', 'whole_food', 'safe', FALSE, 'Contains caffeine.'),
+('Tea', '["tea","tea leaves","tea powder","green tea","black tea","tea extract","green tea extract"]', 'whole_food', 'safe', FALSE, 'Contains caffeine.'),
+('Caffeine', '["caffeine","caffeine powder","caffeine anhydrous"]', 'stimulant', 'caution', FALSE, 'Added caffeine.'),
+('Onion', '["onion","onion powder","dehydrated onion","pyaz","pyaaz","kanda"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Garlic', '["garlic","garlic powder","lahsun","lehsun"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Potato', '["potato","potato powder","potato flakes","dehydrated potato","aloo"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Carrot', '["carrot","gajar"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Beetroot', '["beetroot","chukandar"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Radish', '["radish","mooli"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Turnip', '["turnip","shalgam"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Sweet Potato', '["sweet potato","shakarkandi"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Yam', '["yam","suran","jimikand"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Ginger', '["ginger","dry ginger","ginger powder","adrak","sonth"]', 'whole_food', 'safe', FALSE, 'A rhizome. Some Jains accept it dried; a hard diet rule errs toward excluding.'),
+('Shallot', '["shallot"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+('Colocasia', '["colocasia","arbi","taro"]', 'whole_food', 'safe', FALSE, 'A root vegetable: excluded by a Jain diet.'),
+
+-- 00068: what the Plan page's dishes are made of that the graph lacked.
+('Tomato', '["tomato","tomatoes","tamatar","tomato puree","tomato paste"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Spinach', '["spinach","palak"]', 'whole_food', 'safe', FALSE, 'A leafy vegetable.'),
+('Green Peas', '["green peas","peas","matar","mutter"]', 'whole_food', 'safe', FALSE, 'A legume: excluded on a fasting day.'),
+('Cauliflower', '["cauliflower","gobi","phool gobi"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Okra', '["okra","bhindi","ladyfinger","lady finger"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Brinjal', '["brinjal","baingan","eggplant","aubergine"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Bottle Gourd', '["bottle gourd","lauki","doodhi","ghiya"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Coriander Leaves', '["coriander leaves","coriander","dhania","cilantro","hara dhania"]', 'whole_food', 'safe', FALSE, 'A herb.'),
+('Curry Leaves', '["curry leaves","kadi patta","kadhi patta"]', 'whole_food', 'safe', FALSE, 'A herb.'),
+('Cumin', '["cumin","jeera","cumin seeds","cumin powder"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Asafoetida', '["asafoetida","hing","heeng"]', 'whole_food', 'safe', FALSE, 'Sold compounded, usually with wheat or rice flour: it can carry gluten.'),
+('Garam Masala', '["garam masala"]', 'whole_food', 'safe', FALSE, 'A blend. What is in it varies by brand and kitchen.'),
+('Flattened Rice', '["flattened rice","poha","pohe","aval","chivda","chiwda","beaten rice"]', 'whole_food', 'safe', FALSE, 'Rice, flattened.'),
+('Kidney Beans', '["kidney beans","rajma","red kidney beans"]', 'whole_food', 'safe', FALSE, 'A pulse.'),
+('Banana', '["banana","kela"]', 'whole_food', 'safe', FALSE, 'A fruit.'),
+('Apple', '["apple","seb"]', 'whole_food', 'safe', FALSE, 'A fruit.'),
+('Lemon', '["lemon","lime","nimbu","lemon juice"]', 'whole_food', 'safe', FALSE, 'A fruit.'),
+-- 00073: what the wider week of dishes is made of.
+('Cabbage', '["cabbage","patta gobi","band gobi"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Capsicum', '["capsicum","bell pepper","shimla mirch","green capsicum"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('French Beans', '["french beans","green beans","string beans","phali"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Pumpkin', '["pumpkin","kaddu","red pumpkin","yellow pumpkin","kashiphal"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Bitter Gourd', '["bitter gourd","karela","bitter melon"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Cucumber', '["cucumber","kheera","kakdi"]', 'whole_food', 'safe', FALSE, 'A vegetable.'),
+('Sweet Corn', '["sweet corn","corn kernels","bhutta","american corn","makai dana"]', 'whole_food', 'safe', FALSE, 'Maize, eaten as a vegetable: a grain on a fasting day.'),
+('Fenugreek', '["fenugreek","methi","kasuri methi","methi leaves","fenugreek leaves","methi dana","fenugreek seeds"]', 'whole_food', 'safe', FALSE, 'Leaves, dried leaves and seeds.'),
+('Mustard Greens', '["mustard greens","sarson ka saag","sarson saag"]', 'whole_food', 'safe', FALSE, 'The leaves of the mustard plant.'),
+('Mint', '["mint","pudina","mint leaves"]', 'whole_food', 'safe', FALSE, 'A herb.'),
+('Tamarind', '["tamarind","imli","tamarind pulp"]', 'whole_food', 'safe', FALSE, 'A fruit, used sour.'),
+('Coconut', '["coconut","grated coconut","desiccated coconut","nariyal","copra","coconut powder"]', 'whole_food', 'safe', FALSE, 'The flesh of the coconut.'),
+('Coconut Water', '["coconut water","nariyal pani","tender coconut water"]', 'whole_food', 'safe', FALSE, 'The water of a tender coconut.'),
+('Mango', '["mango","aam","amchur","dry mango powder","alphonso","raw mango","kairi"]', 'whole_food', 'safe', FALSE, 'A fruit, ripe or raw; amchur is dried raw mango.'),
+('Papaya', '["papaya","papita"]', 'whole_food', 'safe', FALSE, 'A fruit.'),
+('Pomegranate', '["pomegranate","anar","anardana"]', 'whole_food', 'safe', FALSE, 'A fruit.'),
+('Orange', '["orange","santra","mosambi","sweet lime"]', 'whole_food', 'safe', FALSE, 'A citrus fruit.'),
+('Guava', '["guava","amrood"]', 'whole_food', 'safe', FALSE, 'A fruit.'),
+('Raisins', '["raisins","raisin","kishmish","sultanas","munakka"]', 'whole_food', 'safe', FALSE, 'Dried grapes: fruit sugar.'),
+('Spring Onion', '["spring onion","spring onions","scallion","green onion","hara pyaz"]', 'whole_food', 'safe', FALSE, 'An onion: kept from a Jain or no onion-garlic kitchen.'),
+('Black Pepper', '["black pepper","kali mirch","pepper powder","peppercorns"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Cardamom', '["cardamom","elaichi","green cardamom"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Cinnamon', '["cinnamon","dalchini"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Cloves', '["cloves","clove","laung"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Bay Leaf', '["bay leaf","bay leaves","tej patta"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Fennel', '["fennel","saunf","fennel seeds"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Carom', '["carom","ajwain","carom seeds"]', 'whole_food', 'safe', FALSE, 'A spice.'),
+('Coriander Seeds', '["coriander seeds","coriander powder","dhania powder","dhaniya powder"]', 'whole_food', 'safe', FALSE, 'A spice: the seed, not the leaf.'),
+('Sambar Powder', '["sambar powder","sambar masala"]', 'whole_food', 'safe', FALSE, 'A blend, usually with roasted toor and chana dal and hing. What is in it varies.'),
+('Rasam Powder', '["rasam powder"]', 'whole_food', 'safe', FALSE, 'A blend, usually with toor dal, pepper, cumin and hing. What is in it varies.'),
+('Chaat Masala', '["chaat masala"]', 'whole_food', 'safe', FALSE, 'A blend: amchur, black salt, cumin and often hing. What is in it varies.'),
+('Pav Bhaji Masala', '["pav bhaji masala"]', 'whole_food', 'safe', FALSE, 'A blend. What is in it varies by brand.'),
+('Black Salt', '["black salt","kala namak","sanchal"]', 'whole_food', 'safe', FALSE, 'A salt.'),
+('Sago', '["sago","sabudana","tapioca pearls","sabudana pearls"]', 'refined_carb', 'safe', FALSE, 'Tapioca starch pearls: eaten on fasting days.'),
+('Puffed Rice', '["puffed rice","murmura","kurmura","mamra","muri"]', 'refined_carb', 'safe', FALSE, 'Rice, puffed.'),
+('Maize', '["maize","makki","makka","maize flour","makki atta","cornmeal"]', 'whole_food', 'safe', FALSE, 'Maize as a grain or flour.'),
+('Black-eyed Peas', '["black eyed peas","black-eyed peas","lobia","chawli","rongi"]', 'whole_food', 'safe', FALSE, 'A pulse.'),
+('Soy Sauce', '["soy sauce","soya sauce"]', 'whole_food', 'safe', FALSE, 'Brewed from soybeans and, usually, wheat.'),
+-- 00074: the fasting-day grain.
+('Barnyard Millet', '["barnyard millet","samak","sama","samvat","samak rice","sama ke chawal","vrat ke chawal","moraiyo"]', 'whole_food', 'safe', FALSE, 'A millet eaten on fasting days.'),
+-- 00076: a fungus, for the Jain rule.
+('Mushroom', '["mushroom","mushrooms","khumb","khumbi","button mushroom","oyster mushroom","shiitake"]', 'whole_food', 'safe', FALSE, 'A fungus: a Jain kitchen excludes it.'),
+-- 00080: roasted gram flour, not besan.
+('Sattu', '["sattu","roasted gram flour","bhuna chana atta","sattu atta"]', 'whole_food', 'safe', FALSE, 'Roasted gram flour, eaten uncooked. Not besan, which is raw.')
 
 ON CONFLICT (canonical_name) DO UPDATE SET
   aliases             = EXCLUDED.aliases,

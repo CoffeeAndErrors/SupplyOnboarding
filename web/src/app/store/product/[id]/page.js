@@ -8,57 +8,31 @@
 //
 // Business logic preserved: fetchAllProducts(), cart, routing. Adds a curated
 // fallback so a product link never dead-loops on an empty DB, and finally
-// wires Add-to-Cart (which the old page never did).
+// wires Add-to-Cart (which the old page never did). The page wears the store's
+// one header now (StoreChrome); its own back/KOI/cart top bar is gone.
 // ============================================================================
 
 import React, { useEffect, useMemo, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ShoppingBag, Leaf } from "lucide-react";
+import { Leaf } from "lucide-react";
 import { getSeedCatalogue } from "@/components/store/shop/shopData";
 import { useCatalogue } from "@/lib/data/useCatalogue";
 import { buildProductVM } from "@/components/store/product/productData";
-import { useCartStore } from "@/store/cartStore";
 import { useGoalStore } from "@/store/goalStore";
 import { useLocation } from "@/contexts/LocationContext";
 import { useProductSupply } from "@/lib/marketplace/useProductSupply";
 import SupplyPanel from "@/components/store/product/SupplyPanel";
-import { C, HEADING } from "@/components/store/landing/tokens";
-import ProductHero from "@/components/store/product/ProductHero";
+import CloseUp from "@/components/store/product/CloseUp";
 import TrustBadge from "@/components/store/product/TrustBadge";
 import { StickyBuyBar } from "@/components/store/product/BuyPanel";
 import {
   WhyEarned, Verdict, IngredientIntelligence, NutritionExplained,
   HealthComparison, Personas, UsageTimeline, ScientificInsights,
-  Transparency, Community, RelatedShelf,
+  Transparency, Community, RelatedShelf, SwapShelf, InContext,
 } from "@/components/store/product/ProductStory";
-
-function TopBar() {
-  const router = useRouter();
-  const [mounted, setMounted] = useState(false);
-  const items = useCartStore((s) => s.items);
-  useEffect(() => {
-    const t = setTimeout(() => setMounted(true), 0);
-    return () => clearTimeout(t);
-  }, []);
-  const count = mounted ? items.reduce((n, i) => n + i.quantity, 0) : 0;
-
-  return (
-    <header className="sticky top-0 z-50 border-b border-[#083D2D]/8 backdrop-blur-xl" style={{ background: "rgba(249,248,244,0.82)" }}>
-      <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
-        <button onClick={() => router.back()} aria-label="Go back" className="grid h-9 w-9 place-items-center rounded-full border border-[#083D2D]/10 bg-white/60 text-[#083D2D] transition-colors hover:bg-white">
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <button onClick={() => router.push("/store/shop")} className="text-[15px] font-extrabold tracking-tight text-[#083D2D]" style={HEADING}>KOI</button>
-        <button onClick={() => router.push("/store/cart")} aria-label="Cart" className="relative grid h-9 w-9 place-items-center rounded-full bg-[#083D2D] text-white transition-transform hover:-translate-y-0.5">
-          <ShoppingBag className="h-4 w-4" />
-          {count > 0 && (
-            <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[9px] font-extrabold text-[#083D2D]" style={{ background: C.lime }}>{count}</span>
-          )}
-        </button>
-      </div>
-    </header>
-  );
-}
+import { getSupabaseClient } from "@/lib/supabase/client";
+import { isTestSku } from "@/lib/data/testCatalogue";
+import { swapsFor } from "@/lib/food/swaps";
 
 export default function ProductDetailPage({ params }) {
   const { id } = use(params);
@@ -75,7 +49,41 @@ export default function ProductDetailPage({ params }) {
   const { pincode } = useLocation();
   const goalProfile = useGoalStore((s) => s.profile);
   const supply = useProductSupply(base, pincode, pool, goalProfile);
-  const vm = useMemo(() => (base ? buildProductVM(base, pool) : null), [base, pool]);
+  // The shopper's goal decides which figures the serving panel leads with.
+  const vm = useMemo(() => (base ? buildProductVM(base, pool, goalProfile) : null), [base, pool, goalProfile]);
+
+  // Swaps with numbers (Phase 5.1): the recorded edges from this SKU. The
+  // local test catalogue has no edges and its ids are not uuids, so it is skipped.
+  const [edges, setEdges] = useState({ skuId: null, rows: [] });
+  const skuId = base?.skuId ?? null;
+  useEffect(() => {
+    if (!skuId || isTestSku(skuId)) return undefined;
+    let live = true;
+    getSupabaseClient()
+      .schema("food")
+      .from("substitution_edge")
+      .select("to_sku, reason, comparability, basis")
+      .eq("from_sku", skuId)
+      .then(({ data }) => { if (live) setEdges({ skuId, rows: data ?? [] }); });
+    return () => { live = false; };
+  }, [skuId]);
+  // In context (plan §11.2): only when the route is switched on and has lines.
+  const [context, setContext] = useState({ skuId: null, value: null });
+  useEffect(() => {
+    if (!skuId || isTestSku(skuId)) return undefined;
+    let live = true;
+    fetch(`/api/products/relative?skuId=${encodeURIComponent(skuId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (live) setContext({ skuId, value: body?.enabled ? body.context : null }); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [skuId]);
+  const inContext = context.skuId === skuId ? context.value : null;
+
+  const swaps = useMemo(
+    () => (base && edges.skuId === base.skuId ? swapsFor({ product: base, edges: edges.rows, catalogue: pool }) : []),
+    [base, edges, pool],
+  );
 
   const related = useMemo(() => {
     if (!base) return [];
@@ -89,9 +97,9 @@ export default function ProductDetailPage({ params }) {
   // Loading (only until fetch resolves and only if not already in fallback)
   if (!vm && !loaded) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center" style={{ background: C.offwhite }}>
-        <Leaf className="mb-4 h-8 w-8 animate-bounce" style={{ color: C.forest }} />
-        <p className="text-[15px] font-semibold text-[#083D2D]" style={{ fontFamily: "var(--font-koi-body)" }}>Loading product…</p>
+      <div role="status" className="flex min-h-[70vh] flex-col items-center justify-center gap-3 bg-koi-bg">
+        <span aria-hidden="true" className="size-[10px] animate-pulse rounded-full bg-koi-ember" />
+        <p className="m-0 font-koi-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-koi-muted">Loading product…</p>
       </div>
     );
   }
@@ -99,20 +107,21 @@ export default function ProductDetailPage({ params }) {
   // Not found
   if (!vm) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center px-6 text-center" style={{ background: C.offwhite }}>
-        <h1 className="text-[28px] font-extrabold text-[#083D2D]" style={HEADING}>Product not found</h1>
-        <p className="mt-2 text-[15px] text-[#083D2D]/55">This item may have been delisted or the link is out of date.</p>
-        <button onClick={() => router.push("/store/shop")} className="mt-6 rounded-full px-6 py-3 text-[14px] font-bold text-white" style={{ background: C.forest }}>Back to shop</button>
+      // The States board's "not found": what happened, and the way back.
+      <div className="flex min-h-[70vh] flex-col items-center justify-center gap-4 bg-koi-bg px-6 text-center">
+        <span aria-hidden="true" className="grid size-16 place-items-center rounded-full bg-koi-tint text-koi-forest"><Leaf className="size-7" /></span>
+        <h1 className="m-0 font-koi-display text-[30px] font-extrabold tracking-[-0.02em] text-koi-forest">Product not found</h1>
+        <p className="m-0 max-w-[360px] text-[15px] leading-relaxed text-koi-ink2">This item may have been delisted or the link is out of date.</p>
+        <button type="button" onClick={() => router.push("/store/shop")} className="mt-2 flex h-12 items-center rounded-full bg-koi-forest px-6 text-sm font-bold text-koi-lime">Back to shop</button>
       </div>
     );
   }
 
   return (
-    <div className="koi-product relative w-full overflow-x-clip pb-28" style={{ background: C.offwhite }}>
-      <TopBar />
-
+    <div className="koi-product ks-page-pad relative w-full overflow-x-clip pb-16" style={{ background: "var(--koi-bg)" }}>
       <main>
-        <ProductHero product={vm} />
+        {/* The close-up: the pack, the label read, the score and the purchase. */}
+        <CloseUp product={{ ...vm, availability: supply.availability, deliveryEta: supply.deliveryEta }} />
         <div ref={sentinel} aria-hidden="true" className="h-0" />
 
         {/* Availability sits directly under the hero, above every editorial
@@ -133,8 +142,10 @@ export default function ProductDetailPage({ params }) {
           <IngredientIntelligence ingredients={vm.ingredients} timeline={vm.ingredientTimeline} evidence={vm.ingredientsEvidence} />
         )}
         <NutritionExplained nutrition={vm.nutrition} />
+        {inContext && <InContext context={inContext} />}
+        {swaps.length > 0 && <SwapShelf swaps={swaps} onSelect={selectProduct} />}
         {vm.comparison.length > 0 && <HealthComparison comparison={vm.comparison} name={vm.name} />}
-        {(vm.personas.for.length > 0 || vm.personas.not.length > 0) && <Personas personas={vm.personas} />}
+        {(vm.personas.for.length > 0 || vm.personas.goodToKnow.length > 0) && <Personas personas={vm.personas} />}
         {vm.usage.length > 0 && <UsageTimeline usage={vm.usage} pairings={vm.pairings} />}
         {vm.science.length > 0 && <ScientificInsights science={vm.science} />}
         <Transparency items={vm.transparency} />

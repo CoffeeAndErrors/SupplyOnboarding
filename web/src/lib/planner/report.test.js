@@ -1,0 +1,171 @@
+// ============================================================================
+// KOI PLANNER — tests for achieved against asked
+// Run with `npm test`.
+// ============================================================================
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { planReport, basketDiff, materiallyShort, atPortionLimit, whoEatsWhat, refusalReason, TOLERANCE } from "@/lib/planner/report.js";
+
+test("each person sees what in the basket is theirs, and what is not for them and why", () => {
+  const members = [{ id: "me", label: "Me" }, { id: "wife", label: "Wife", avoidFlags: ["gluten"] }, { id: "kid", label: "Kid 1", avoidFlags: ["tree_nut"] }];
+  const catalogue = [
+    { skuId: "atta", name: "Atta", packAmount: 1000, packUnit: "g", ingredientEvidence: "machine_read", readAgreement: 2 },
+    { skuId: "almonds", name: "Almonds", packAmount: 200, packUnit: "g", ingredientEvidence: "partial" },
+  ];
+  const basket = [
+    { skuId: "atta", name: "Atta", packs: 2, shares: { me: 0.5, kid: 0.5 } },
+    { skuId: "almonds", name: "Almonds", packs: 1, shares: { me: 0.6, wife: 0.4 } },
+  ];
+  const refusals = {
+    atta: [{ member: "wife", flag: "gluten", rule: "avoided" }],
+    almonds: [{ member: "kid", flag: "tree_nut", rule: "avoided" }],
+  };
+  const [me, wife, kid] = whoEatsWhat({ members, catalogue, basket, refusals });
+  assert.deepEqual(me.allowed.map((a) => [a.name, a.packs, a.amount]), [["Atta", 1, 1000], ["Almonds", 0.6, 120]]);
+  assert.deepEqual(me.notForThem, []);
+  assert.deepEqual(wife.allowed.map((a) => a.name), ["Almonds"]);
+  assert.deepEqual(wife.allowed[0].notVerifiedFor, ["gluten"], "a partial list cannot show gluten is absent");
+  assert.deepEqual(kid.allowed.find((a) => a.name === "Atta").notVerifiedFor, [], "a full list can");
+  const oneReading = whoEatsWhat({ members, basket, refusals, catalogue: catalogue.map((c) => ({ ...c, readAgreement: null })) });
+  assert.deepEqual(oneReading[2].allowed.find((a) => a.name === "Atta").notVerifiedFor, ["tree nuts"],
+    "a machine read no second reading agreed with cannot show tree nuts are absent");
+  assert.deepEqual(me.allowed[0].notVerifiedFor, [], "nothing to check for someone who avoids nothing");
+  assert.deepEqual(wife.notForThem, [{ skuId: "atta", name: "Atta", because: "contains gluten" }]);
+  assert.deepEqual(kid.notForThem, [{ skuId: "almonds", name: "Almonds", because: "contains tree nuts" }]);
+  assert.equal(refusalReason({ flag: "root_veg", rule: "diet" }), "not in their diet: root vegetables");
+  assert.equal(refusalReason({ flag: "carbs_not_declared", rule: "pattern" }), "carbohydrate not declared, so it can't be shown to fit their carb limit");
+});
+
+test("a plan says which products the portion ceiling held back, and for whom", () => {
+  const meta = {
+    portionCaps: {
+      rice: {
+        me: { packs: 1.26, basis: "reference_portion", perDay: 180, unit: "g" },
+        kid: { packs: 0.882, basis: "reference_portion", perDay: 126, unit: "g" },
+      },
+      mix: { me: { packs: 2.849, basis: "energy_share", perDay: 200, unit: "kcal" } },
+    },
+  };
+  const limited = atPortionLimit({
+    meta,
+    // Me at the ceiling (within solver tolerance), the kid under it, the mix under it.
+    solution: { eats: { rice: { me: 1.2599, kid: 0.5 }, mix: { me: 1 } } },
+    catalogue: [{ skuId: "rice", name: "Rice" }, { skuId: "mix", name: "Golden Milk Mix" }],
+    members: [{ id: "me", label: "Me" }, { id: "kid", label: "Kid 1" }],
+  });
+  assert.deepEqual(limited, [
+    { skuId: "rice", name: "Rice", members: [{ member: "me", label: "Me", perDay: 180, unit: "g", basis: "reference_portion" }] },
+  ]);
+  assert.deepEqual(atPortionLimit({ meta: {}, solution: { eats: { rice: { me: 5 } } } }), [], "no ceiling recorded, nothing claimed");
+});
+
+test("a plan more than 5% short of any target has not met its brief", () => {
+  const report = (short, asked) => ({ perMember: [{ asked: { protein: asked }, shortfall: short ? { protein: short } : {} }] });
+  assert.equal(materiallyShort(report(81, 210)), true);
+  assert.equal(materiallyShort(report(1, 70)), false, "1.4% is close enough");
+  assert.equal(materiallyShort(report(0, 70)), false);
+  assert.equal(materiallyShort({ perMember: [] }), false);
+});
+
+test("taking an item out names a substitute only where KOI holds a reason", () => {
+  const diff = basketDiff({
+    removedSkuId: "ragi",
+    before: [{ skuId: "ragi", name: "Ragi Mix", packs: 3 }, { skuId: "rice", name: "Rice", packs: 8 }, { skuId: "dates", name: "Dates", packs: 1 }],
+    after: [{ skuId: "golden", name: "Golden Milk Mix", packs: 2 }, { skuId: "rice", name: "Rice", packs: 9 }, { skuId: "chips", name: "Chips", packs: 1 }],
+    edges: [{ to_sku: "golden", why: ["35.5 g less sugar per 100 g"] }],
+  });
+  assert.deepEqual(diff.removed, { skuId: "ragi", name: "Ragi Mix", packs: 3 });
+  assert.deepEqual(diff.substitutes, [{ skuId: "golden", name: "Golden Milk Mix", packs: 2, why: ["35.5 g less sugar per 100 g"] }]);
+  assert.deepEqual(diff.added, [{ skuId: "chips", name: "Chips", packs: 1 }], "new, but not called a substitute");
+  assert.deepEqual(diff.changed, [{ skuId: "rice", name: "Rice", from: 8, to: 9 }]);
+  assert.deepEqual(diff.dropped, [{ skuId: "dates", name: "Dates", packs: 1 }]);
+});
+
+const rice = { skuId: "rice", name: "Kalanamak Rice", price: 299, packSize: "1000 g", perPack: { protein: 95, kcal: 3500 } };
+const almonds = { skuId: "almonds", name: "California Almonds", price: 450, packSize: "200 g", perPack: { protein: 34, kcal: 1312 } };
+
+const me = { id: "me", label: "Me", targets: { protein: 60, kcal: 2000 } };
+const kid = { id: "kid", label: "Kid 1", targets: { protein: 30 } };
+
+test("achieved is arithmetic on the basket, per member", () => {
+  const report = planReport({
+    members: [me, kid],
+    catalogue: [rice, almonds],
+    days: 7,
+    // 4 x ₹299 + 2 x ₹450 = ₹2,096, so this case is within its budget.
+    // Going over is its own test below.
+    budget: 2500,
+    solution: {
+      packs: { rice: 4, almonds: 2 },
+      // Me eats three packs of rice and one of almonds; the kid the rest.
+      eats: { rice: { me: 3, kid: 1 }, almonds: { me: 1, kid: 1 } },
+    },
+  });
+
+  assert.equal(report.cost, 4 * 299 + 2 * 450);
+  assert.equal(report.withinBudget, true);
+  assert.deepEqual(report.basket.map((l) => [l.name, l.packs, l.shares]), [
+    ["Kalanamak Rice", 4, { me: 0.75, kid: 0.25 }],
+    ["California Almonds", 2, { me: 0.5, kid: 0.5 }],
+  ]);
+
+  const mine = report.perMember.find((m) => m.id === "me");
+  assert.deepEqual(mine.asked, { protein: 420, kcal: 14000 });
+  assert.deepEqual(mine.achieved, { protein: 319, kcal: 11812, carbs: 0, fat: 0 });
+  assert.deepEqual(mine.shortfall, { protein: 101, kcal: 2188 });
+  assert.deepEqual(mine.excess, {});
+
+  const theirs = report.perMember.find((m) => m.id === "kid");
+  assert.deepEqual(theirs.asked, { protein: 210 }, "only the nutrient they set a target for");
+  // One pack of rice (95 g) and one of almonds (34 g) is 129 g against 210 asked.
+  assert.deepEqual(theirs.achieved.protein, 129);
+  assert.deepEqual(theirs.shortfall, { protein: 81 });
+  assert.deepEqual(theirs.excess, {}, "nobody is over on protein here");
+});
+
+test("a shortfall is never rounded away, and noise is not a shortfall", () => {
+  const exact = planReport({
+    members: [{ id: "me", targets: { protein: 10 } }],
+    catalogue: [{ skuId: "x", price: 100, perPack: { protein: 70 } }],
+    days: 7,
+    solution: { packs: { x: 1 }, eats: { x: { me: 1 } } },
+  });
+  assert.deepEqual(exact.perMember[0].shortfall, {});
+  assert.deepEqual(exact.perMember[0].excess, {});
+  assert.equal(exact.summary.everyTargetMet, true);
+
+  const short = planReport({
+    members: [{ id: "me", label: "Me", targets: { protein: 10 } }],
+    catalogue: [{ skuId: "x", price: 100, perPack: { protein: 69 } }],
+    days: 7,
+    solution: { packs: { x: 1 }, eats: { x: { me: 1 } } },
+  });
+  assert.deepEqual(short.perMember[0].shortfall, { protein: 1 });
+  assert.deepEqual(short.unmet, [{ member: "me", label: "Me", nutrient: "protein", short: 1 }]);
+  assert.equal(short.summary.everyTargetMet, false);
+  assert.ok(TOLERANCE < 1);
+});
+
+test("an empty basket reports nothing achieved rather than nothing asked", () => {
+  const report = planReport({ members: [me], catalogue: [rice], days: 7, budget: 500, solution: { packs: {}, eats: {} } });
+  assert.deepEqual(report.basket, []);
+  assert.equal(report.cost, 0);
+  assert.equal(report.withinBudget, true, "spending nothing is within any budget");
+  assert.deepEqual(report.perMember[0].asked, { protein: 420, kcal: 14000 });
+  assert.deepEqual(report.perMember[0].shortfall, { protein: 420, kcal: 14000 });
+  assert.equal(report.summary.products, 0);
+});
+
+test("over budget is reported, not hidden", () => {
+  const report = planReport({
+    members: [me],
+    catalogue: [almonds],
+    days: 7,
+    budget: 400,
+    solution: { packs: { almonds: 2 }, eats: { almonds: { me: 2 } } },
+  });
+  assert.equal(report.cost, 900);
+  assert.equal(report.withinBudget, false);
+});

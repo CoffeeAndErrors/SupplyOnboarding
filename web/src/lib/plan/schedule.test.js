@@ -1,0 +1,268 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import { DISHES } from "@/lib/food/dishData";
+import { dishFacts, dishFor, refusalsOf } from "@/lib/food/dishes";
+import { buildWeek, alternativesFor, productsFor, proteinDensity, SLOT_KEYS } from "./schedule";
+
+const dish = (key) => DISHES.find((d) => d.key === key);
+
+// ── dishes, through the ingredient graph ──────────────────────────────────
+test("a dish's allergens come from its lines, not from anything typed", () => {
+  const dal = dishFacts(dish("dal_tadka"));
+  assert.ok(dal.contains.includes("dairy"), "ghee is dairy");
+  assert.ok(dal.flags.includes("allium"), "garlic and onion");
+  assert.ok(dal.flags.includes("pulse"));
+  assert.ok(dal.mayContain.includes("gluten"), "compounded hing");
+  assert.deepEqual(dal.blends, ["Asafoetida"]);
+});
+
+test("chickpea is a pulse now, so besan chilla is not a fasting dish", () => {
+  assert.ok(dishFacts(dish("besan_chilla")).flags.includes("pulse"));
+  assert.equal(dishFor(dish("besan_chilla"), { diet_type: "fasting" }).ok, false);
+});
+
+test("a diet refuses what it excludes, in words", () => {
+  const v = dishFor(dish("egg_bhurji"), { diet_type: "vegetarian" });
+  assert.equal(v.ok, false);
+  assert.match(v.because, /egg/);
+  assert.equal(dishFor(dish("dal_tadka"), { diet_type: "jain" }).ok, false, "onion and garlic are root vegetables");
+  assert.equal(dishFor(dish("jain_moong_dal"), { diet_type: "jain" }).ok, true);
+});
+
+test("an optional line is left out for someone who can't have it, not the whole dish", () => {
+  const v = dishFor(dish("kanda_poha"), { diet_type: "vegetarian", avoids: [{ key: "peanuts", severity: "allergy" }] });
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.leaveOut, ["Peanut"]);
+});
+
+test("a may-contain refuses only an allergy; a blend is never verified free", () => {
+  const coeliac = { diet_type: "vegetarian", avoids: [{ key: "gluten", severity: "allergy" }] };
+  assert.equal(dishFor(dish("dal_tadka"), coeliac).ok, false, "hing may contain gluten");
+  const intolerant = { diet_type: "vegetarian", avoids: [{ key: "gluten", severity: "intolerance" }] };
+  assert.equal(dishFor(dish("dal_tadka"), intolerant).ok, true);
+  const nuts = { diet_type: "non_vegetarian", avoids: [{ key: "peanuts", severity: "allergy" }] };
+  assert.deepEqual(dishFor(dish("chana_masala"), nuts).notVerifiedFor, ["peanuts"]);
+});
+
+test("age safety holds for dishes: no whole nuts under five", () => {
+  const toddler = { age_band: "child_1_3", diet_type: "vegetarian" };
+  assert.equal(dishFor(dish("handful_nuts"), toddler).ok, false);
+  assert.equal(dishFor(dish("handful_nuts"), { age_band: "adult_19_59", diet_type: "vegetarian" }).ok, true);
+});
+
+test("a dislike is said, never a refusal", () => {
+  const r = refusalsOf({ avoids: [{ key: "caffeine", severity: "dislike" }] });
+  assert.ok(r.soft.has("caffeine"));
+  assert.equal(dishFor(dish("masala_chai"), { avoids: [{ key: "caffeine", severity: "dislike" }] }).ok, true);
+});
+
+// ── the week ──────────────────────────────────────────────────────────────
+const lines = [
+  { skuId: "rice", name: "Gorakhpur Kalanamak Rice", categoryKey: "staples.rice" },
+  { skuId: "moong", name: "Split Moong Dal", categoryKey: "staples.pulses" },
+  { skuId: "chana", name: "Kabuli Chana", categoryKey: "staples.pulses" },
+  { skuId: "pb", name: "Natural Peanut Butter Crunch", categoryKey: "nuts_seeds.nut_butters" },
+];
+const people = [
+  { memberId: "me", label: "Me", age_band: "adult_19_59", diet_type: "non_vegetarian", avoids: [] },
+  { memberId: "wife", label: "Wife", age_band: "adult_19_59", diet_type: "vegetarian", avoids: [] },
+  { memberId: "son", label: "Son", age_band: "child_7_9", diet_type: "vegetarian", avoids: [{ key: "peanuts", severity: "allergy" }] },
+];
+const allowed = (skus) => skus.map(([skuId, amount]) => ({ skuId, name: skuId, packs: 1, amount, unit: "g" }));
+const report = {
+  whoEatsWhat: [
+    { member: "me", allowed: allowed([["rice", 1400], ["moong", 700], ["chana", 700], ["pb", 500]]) },
+    { member: "wife", allowed: allowed([["rice", 1000], ["moong", 500], ["chana", 100], ["pb", 400]]) },
+    { member: "son", allowed: allowed([["rice", 1200], ["moong", 400]]) },
+  ],
+};
+const start = new Date("2026-09-23T06:00:00Z");
+
+test("a week has every day and every slot, and lunch is a base with a main or one pot", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  assert.equal(week.days.length, 7);
+  assert.deepEqual(week.slots, SLOT_KEYS);
+  const lunch = week.cells["0:lunch"];
+  assert.ok(lunch.shared);
+  const kinds = lunch.shared.dishes.map((x) => x.kind).sort();
+  assert.ok(JSON.stringify(kinds) === JSON.stringify(["base", "main"]) || JSON.stringify(kinds) === JSON.stringify(["one_pot"]));
+});
+
+test("a staple bought for the week is cooked through the week, not in one serving", () => {
+  // 24 Sep: besan added for one chilla was one 127 g serving and a half-full pack.
+  const withBesan = [...lines, { skuId: "besan", name: "Besan", categoryKey: "staples.flours" }];
+  const r = { whoEatsWhat: report.whoEatsWhat.map((w) => ({ ...w, allowed: [...w.allowed, { skuId: "besan", name: "Besan", packs: 1, amount: 250, unit: "g" }] })) };
+  const week = buildWeek({ report: r, lines: withBesan, people, days: 7, start });
+  const uses = Object.values(week.cells).filter((c) => [...(c.shared?.dishes ?? []), ...Object.values(c.own).flatMap((o) => o.dishes)]
+    .some((x) => week.usesFor(x.key, "me").some((u) => u.skuId === "besan"))).length;
+  assert.ok(uses >= 2, `besan dishes in the week: ${uses}`);
+  assert.ok(week.perServing("me", "besan").amount <= 125, "at most half the week's share in one serving");
+});
+
+test("no one-pot meal that uses nothing from the basket (pav bhaji every night)", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  const pots = Object.values(week.cells).flatMap((c) => c.shared?.dishes ?? []).filter((x) => x.kind === "one_pot").map((x) => x.key);
+  assert.ok(!pots.includes("pav_bhaji"), pots.join(", "));
+});
+
+test("the dish needs its staple in the basket: no rajma when there are no kidney beans", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  const served = Object.values(week.cells).flatMap((c) => [...(c.shared?.dishes ?? []), ...Object.values(c.own).flatMap((o) => o.dishes)]).map((x) => x.key);
+  assert.ok(!served.includes("rajma"));
+  assert.ok(served.includes("dal_tadka") || served.includes("moong_khichdi") || served.includes("jain_moong_dal"), "the moong is cooked");
+});
+
+test("nobody is served something they can't have", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  for (const cell of Object.values(week.cells)) {
+    for (const id of cell.shared?.eaters ?? []) {
+      const person = people.find((p) => p.memberId === id);
+      for (const x of cell.shared.dishes) assert.ok(dishFor(dish(x.key), person).ok, `${x.key} for ${id}`);
+    }
+  }
+});
+
+test("a meal a Take 2 keeps in place is KOI's, not the shopper's pick; today is a date, not day one", () => {
+  const first = buildWeek({ report, lines, people, days: 7, start });
+  const dishes = first.cells["3:dinner"].shared.dishes.map((x) => x.key);
+  const week = buildWeek({ report, lines, people, days: 7, start, today: new Date("2026-09-25T06:00:00Z"), overrides: { "3:dinner": { dishes, kept: true }, "2:lunch": { dishes: first.cells["2:lunch"].shared.dishes.map((x) => x.key) } } });
+  assert.equal(week.cells["3:dinner"].shared.chosen, false);
+  assert.equal(week.cells["2:lunch"].shared.chosen, true);
+  assert.deepEqual(week.cells["3:dinner"].shared.dishes.map((x) => x.key), dishes);
+  assert.deepEqual(week.days.filter((d) => d.today).map((d) => d.index), [2], "the 25th is the week's third day");
+});
+
+test("variety: the same main does not fill every lunch", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  const mains = week.days.map((d) => week.cells[`${d.index}:lunch`].shared?.dishes.map((x) => x.key).join("+"));
+  assert.ok(new Set(mains).size >= 3, mains.join(", "));
+});
+
+test("the planner's amounts are spread over the meals, never invented", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  const rice = week.perServing("me", "rice");
+  assert.ok(rice && rice.amount > 0 && rice.amount <= 1400);
+  // Peanut butter goes in no dish: it stays on Me's plate as an addition.
+  assert.ok(week.additions.me.some((a) => a.skuId === "pb"));
+  assert.ok(!week.additions.son.some((a) => a.skuId === "pb"), "the son is not given peanut butter");
+});
+
+test("the shopper's own pick wins, and alternatives suit everyone at the table", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start, overrides: { "0:breakfast": { dishes: ["fruit_bowl"] } } });
+  assert.deepEqual(week.cells["0:breakfast"].shared.dishes.map((x) => x.key), ["fruit_bowl"]);
+  const alts = alternativesFor(week.cells["0:lunch"], people);
+  assert.ok(alts.every((a) => people.filter((p) => week.cells["0:lunch"].shared.eaters.includes(p.memberId)).every((p) => dishFor(dish(a.key), p).ok)));
+});
+
+test("what the dishes need beyond the basket is listed, by kind", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  assert.ok(week.alsoNeed.fresh.length > 0);
+  assert.ok(week.alsoNeed.fresh.every((f) => f.dishes.length > 0 && f.meals > 0));
+  assert.ok(!week.alsoNeed.fresh.some((f) => f.ingredient === "Lentils"), "the basket brings the dal");
+});
+
+test("someone without a dish's staple doesn't stop the others having it", () => {
+  // Only Me eats the chana. The shared pot is one everyone can have; Me's
+  // chana is cooked on the side, named as the dish it becomes.
+  const onlyMe = { whoEatsWhat: report.whoEatsWhat.map((w) => (w.member === "me" ? w : { ...w, allowed: w.allowed.filter((a) => a.skuId !== "chana") })) };
+  const week = buildWeek({ report: onlyMe, lines, people, days: 7, start });
+  const chanaFor = Object.values(week.cells).flatMap((c) => (c.shared?.dishes.some((x) => x.key === "chana_masala") ? c.shared.eaters : []));
+  assert.ok(!chanaFor.includes("son"), "never served to someone who has no chana");
+  const side = week.additions.me.find((a) => a.skuId === "chana");
+  // Named as a dish made from it, whichever chickpea dish that is.
+  if (side) assert.ok(dish(side.asDish?.key)?.lines.some((l) => l.ingredient === "Chickpea"), `a leftover staple is named as a dish made from it: ${side.asDish?.key}`);
+  // A breakfast the two with moong can have is shared by them, not dropped.
+  const breakfast = week.cells["0:breakfast"];
+  assert.ok((breakfast.shared?.eaters.length ?? 0) >= 2, JSON.stringify(breakfast.shared));
+});
+
+test("two products on the same shelf both go into the dish", () => {
+  const twoRices = [...lines, { skuId: "basmati", name: "Rozana Super Basmati Rice", categoryKey: "staples.rice" }];
+  const r = { whoEatsWhat: report.whoEatsWhat.map((w) => (w.member === "me" ? { ...w, allowed: [...w.allowed, { skuId: "basmati", name: "basmati", packs: 1, amount: 700, unit: "g" }] } : w)) };
+  const week = buildWeek({ report: r, lines: twoRices, people, days: 7, start });
+  assert.ok(!week.additions.me.some((a) => a.skuId === "basmati"));
+  assert.ok(week.perServing("me", "basmati")?.amount > 0);
+});
+
+test("a picked dish's missing staple is listed, and the shop's product for it found", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start, overrides: { "0:lunch": { dishes: ["steamed_rice", "rajma"] } } });
+  const rajma = week.alsoNeed.shop.find((n) => n.ingredient === "Kidney Beans");
+  assert.ok(rajma && rajma.anchor, "rajma needs kidney beans, which the basket doesn't have");
+  const shelf = [
+    { skuId: "k1", name: "Chitra Rajma", categoryKey: "staples.pulses", price: 180 },
+    { skuId: "k2", name: "Red Kidney Beans", categoryKey: "staples.pulses", price: 150 },
+    { skuId: "m1", name: "Moong Dal", categoryKey: "staples.pulses", price: 90 },
+  ];
+  const [found] = productsFor([rajma], shelf);
+  assert.equal(found.product.skuId, "k2", "the cheapest product that is kidney beans, not the cheapest pulse");
+  assert.equal(productsFor([rajma], [])[0].product, null);
+});
+
+test("'any rice' is still rice: poha on the same shelf is not offered for steamed rice", () => {
+  const rice = { ingredient: "Polished Rice", category: "staples.rice", anyOfShelf: true };
+  const shelf = [
+    { skuId: "poha", name: "Poha (Thick)", categoryKey: "staples.rice", price: 55 },
+    { skuId: "basmati", name: "Rozana Super Basmati Rice", categoryKey: "staples.rice", price: 130 },
+  ];
+  assert.equal(productsFor([rice], shelf)[0].product.skuId, "basmati");
+  // Nothing named for it: then any pack on the shelf will do, as the recipe says.
+  assert.equal(productsFor([rice], shelf.slice(0, 1))[0].product.skuId, "poha");
+});
+
+test("days are the shopper's own calendar days", () => {
+  const week = buildWeek({ report, lines, people, days: 2, start: new Date(2026, 8, 24, 5, 0) });
+  assert.equal(week.days[0].date, "2026-09-24");
+  assert.equal(week.days[0].label, "Thu");
+});
+
+test("someone who eats no meals at home is not at the table", () => {
+  const away = people.map((p) => (p.memberId === "me" ? { ...p, meals_from_home: ["dinner"] } : p));
+  const week = buildWeek({ report, lines, people: away, days: 3, start });
+  assert.ok(!week.cells["0:lunch"].shared?.eaters.includes("me"));
+  assert.ok(week.cells["0:dinner"].shared?.eaters.includes("me") || week.cells["0:dinner"].own.me);
+});
+
+test("rice and dal at home still make lunch and dinner, though the plan doesn't buy them", () => {
+  // The basket without rice and moong: they're in the kitchen already.
+  const bought = lines.filter((l) => !["rice", "moong"].includes(l.skuId));
+  const r = {
+    whoEatsWhat: report.whoEatsWhat.map((w) => ({ ...w, allowed: w.allowed.filter((a) => !["rice", "moong"].includes(a.skuId)) })),
+  };
+  const atHome = lines.filter((l) => ["rice", "moong"].includes(l.skuId));
+  const without = buildWeek({ report: r, lines: bought, people, days: 3, start });
+  const withHome = buildWeek({ report: r, lines: bought, people, days: 3, start, atHome });
+  const dinners = (w) => [0, 1, 2].filter((d) => w.cells[`${d}:dinner`].shared).length;
+  assert.ok(dinners(withHome) > dinners(without));
+  assert.equal(dinners(withHome), 3);
+  // Nothing at home is an addition to anyone's plate: it wasn't bought.
+  for (const id of ["me", "wife", "son"]) assert.ok(!withHome.additions[id].some((a) => ["rice", "moong"].includes(a.skuId)));
+});
+
+// ── exact macros: the menu leans protein-dense for whoever needs it ─────────
+test("someone on their own numbers gets protein-dense plates; nobody else's menu changes", () => {
+  const lifterLines = [...lines,
+    { skuId: "egg", name: "Farm Fresh Eggs", categoryKey: "eggs.hen_eggs" },
+    { skuId: "soya", name: "Soya Chunks", categoryKey: "staples.pulses" },
+    { skuId: "paneer", name: "Malai Paneer", categoryKey: "dairy.paneer" }];
+  const me = [{ memberId: "me", label: "Me", age_band: "adult_19_59", diet_type: "non_vegetarian", avoids: [] }];
+  const r = { whoEatsWhat: [{ member: "me", allowed: allowed([["rice", 1400], ["moong", 700], ["chana", 700], ["egg", 900], ["soya", 400], ["paneer", 800]]) }] };
+  const density = (week) => {
+    const plates = Object.values(week.cells).flatMap((c) => c.shared?.dishes ?? []).filter((x) => x.kind !== "base" && x.kind !== "drink");
+    return plates.reduce((a, x) => a + (proteinDensity(x.key) ?? 0), 0) / plates.length;
+  };
+  const plain = buildWeek({ report: r, lines: lifterLines, people: me, days: 7, start });
+  const lifter = buildWeek({ report: r, lines: lifterLines, people: me, days: 7, start, macroNeeds: { me: { proteinPer100kcal: 7.3 } } });
+  assert.ok(density(lifter) > density(plain), `${density(lifter).toFixed(2)} vs ${density(plain).toFixed(2)}`);
+  // A household without exact macros gets the very same week as before.
+  const before = buildWeek({ report, lines, people, days: 7, start });
+  const after = buildWeek({ report, lines, people, days: 7, start, macroNeeds: {} });
+  assert.deepEqual(Object.values(after.cells).map((c) => c.shared?.dishes?.map((x) => x.key)), Object.values(before.cells).map((c) => c.shared?.dishes?.map((x) => x.key)));
+});
+
+test("supplierOf names the basket product that fills a shelf line, for sizing from its label", () => {
+  const week = buildWeek({ report, lines, people, days: 7, start });
+  assert.equal(week.supplierOf("steamed_rice", 0, "me"), "rice");
+  assert.equal(week.supplierOf("steamed_rice", 0, "nobody"), null);
+  assert.equal(week.supplierOf("aloo_gobi", 0, "me"), null, "a fresh line has no supplier");
+});

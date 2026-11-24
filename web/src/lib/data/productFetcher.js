@@ -15,10 +15,19 @@
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { AVAILABILITY } from '@/lib/recommendation/config';
 import { guardClaims, isClaimSafeText, isHighProtein } from '@/lib/nutrition/claims';
+import { isLabelCurrent } from '@/lib/recommendation/verification';
+import { categorise } from '@/lib/food/taxonomy';
+import { latestReport } from '@/lib/score';
+import { testCatalogueRows } from '@/lib/data/testCatalogue';
 
 /** Number, or null when the column is absent. Never coerces missing to 0. */
 const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
 
+/**
+ * Every approved product, plus the local test catalogue when it is switched on
+ * (lib/data/testCatalogue.js). Test rows go through the same mapping as live
+ * ones, so what the storefront and the planner see is shaped identically.
+ */
 export async function fetchAllProducts() {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
@@ -27,27 +36,41 @@ export async function fetchAllProducts() {
       id,
       product_name,
       category_l1,
+      category_l2,
       brand_id,
       brands (brand_name),
       skus (
-        id, variant_name, mrp, net_weight,
+        id, variant_name, mrp, net_weight, keep_refrigerated,
         sku_nutrition (*),
         screening_reports (*),
-        sku_label_facts (*)
+        sku_label_facts (*),
+        sku_processing (*)
       )
     `)
     .eq('status', 'approved');
 
   if (error) {
     console.error("Error fetching products:", JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
-    return [];
+    return mapProducts(testCatalogueRows());
   }
 
+  return mapProducts([...data, ...testCatalogueRows()]);
+}
+
+/**
+ * Supabase product rows (with brands, skus, sku_nutrition, screening_reports
+ * and sku_label_facts nested) in the shape the storefront renders.
+ * @param {Array<object>} rows
+ * @returns {Array<object>}
+ */
+export function mapProducts(rows) {
   // Map to the complex frontend structure
-  return data.map(p => {
+  return rows.map(p => {
     const sku = p.skus?.[0] || {};
     const nutrition = sku.sku_nutrition?.[0] || {};
-    const screening = sku.screening_reports?.[0] || {};
+    // The report that stands now, not the first row returned: older versions
+    // are kept for history, and the first was a hand-typed June score.
+    const screening = latestReport(sku.screening_reports) || {};
     const flags = screening.flags || {};
     // A published ingredient label, or nothing. The view returns only
     // published rows, each saying how it was established: `verified` (a person
@@ -64,6 +87,12 @@ export async function fetchAllProducts() {
           ingredientsText: labelRow.raw_ingredient_text || '',
           allergens: labelRow.allergens || [],
           mayContain: labelRow.may_contain || [],
+          // When KOI last saw the pack (migration 00029). A year without a
+          // fresh sighting and the list stops counting as complete.
+          confirmedAt: labelRow.confirmed_at ?? null,
+          // How many independent readings agreed on the allergens (00063,
+          // 00081). A machine read needs 2 to say an allergen is absent.
+          readAgreement: labelRow.read_agreement ?? null,
         }
       : null;
     // Only claims the screening report actually made. This used to default to
@@ -74,7 +103,18 @@ export async function fetchAllProducts() {
     // claims regulations, so "Immunity Booster" is dropped as a physiological
     // claim, and a brand's "High protein" survives only if its own declared
     // figures pass the test KOI's badge applies (lib/nutrition/claims.js).
-    const claims = guardClaims(flags.claims, nutrition);
+    //
+    // Figures nobody has seen on a pack for a year support no nutrient claim,
+    // the brand's or KOI's: the recipe may have changed. They still display as
+    // what was declared.
+    // The aisle and category come from KOI's category tree, not the brand's
+    // typed category ("Healthy Snacks" put a prohibited word on the shelf).
+    // The category also carries its reference portion, so a per-serving claim
+    // is judged on a realistic serving (lib/food/taxonomy.js, basis.js).
+    const taxonomy = categorise({ name: p.product_name, categoryL2: p.category_l2, categoryL1: p.category_l1 });
+    const portion = taxonomy?.portion ?? null;
+    const figures = isLabelCurrent(nutrition.confirmed_at) ? { ...nutrition, portion_reference: portion } : {};
+    const claims = guardClaims(flags.claims, figures);
 
     // "High protein" is derived from the declared value, never from the name.
     // The previous rule also fired on any product whose name contained
@@ -92,7 +132,7 @@ export async function fetchAllProducts() {
     // disagreement: at 10 a product got the badge on its card while shelves.js
     // and search, both reading 12, left it out.
     const hasHighProtein = claims.some(c => String(c).toLowerCase() === 'high protein');
-    if (!hasHighProtein && isHighProtein(nutrition)) claims.push("High Protein");
+    if (!hasHighProtein && isHighProtein(figures)) claims.push("High Protein");
     // A reviewer's note is KOI's own voice, so it answers to the same rule as
     // a brand claim. "Potent anti-inflammatory mix" is a physiological claim
     // no pack could print; KOI showing it is KOI making it.
@@ -165,8 +205,18 @@ export async function fetchAllProducts() {
       // lookups key on this, and marketplace_sku_map references skus(id).
       skuId: sku.id ?? null,
       brand: p.brands?.brand_name || "Unknown",
+    // How processed KOI knows this to be (NOVA, 00057), and whether the pack
+    // has to be kept cold. Both are null when nobody has established them, and
+    // null is never read as "minimally processed" or "ambient".
+    novaGroup: sku?.sku_processing?.[0]?.nova_group ?? sku?.sku_processing?.nova_group ?? null,
+    keepRefrigerated: sku?.keep_refrigerated ?? null,
       name: p.product_name,
-      category: p.category_l1,
+      // null when the name and the brand's category name nothing KOI knows:
+      // an unplaced product is shown under "All", never under a made-up aisle.
+      category: taxonomy?.aisle ?? null,
+      subcategory: taxonomy?.subcategory ?? null,
+      categoryKey: taxonomy?.key ?? null,
+      portion,
       goalTags: claims,
       image: image || { hero: '', label: '', lifestyle: '' },
       price: sku.mrp || 0,
@@ -198,7 +248,11 @@ export async function fetchAllProducts() {
       compareInsight: null,
 
       // Details page extra mapping
-      koiStatus: screening.verdict || null,
+      // Shown only when it is a pass. Scores are computed now, and "KOI review"
+      // or "KOI rejected" printed over a listed product's photo reads as a
+      // warning label nobody decided to publish. The score ring still shows
+      // the number; whether a low-scoring product stays listed is a decision.
+      koiStatus: screening.verdict === 'eligible' ? screening.verdict : null,
       verdict: {
         summary: reviewNotes,
         pros: claims,
@@ -224,7 +278,10 @@ export async function fetchAllProducts() {
       watchOuts: [],
       alternatives: [],
       reviews: [],
-      reviewTags: []
+      reviewTags: [],
+      // Set only on the local test catalogue: where it came from, its licence,
+      // and that the price is an estimate. null for every live product.
+      testCatalogue: p._test ?? null,
     };
   });
 }

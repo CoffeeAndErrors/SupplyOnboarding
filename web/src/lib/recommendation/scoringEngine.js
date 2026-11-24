@@ -11,8 +11,9 @@
 
 import {
   WEIGHTS, PENALTIES, THRESHOLDS as T, GOAL_PROFILES, UNKNOWN_FIT,
-  FOODS_LOVE, FOODS_AVOID, MEALS, BUDGET_RANGES, MEAL_MATCH,
+  FOODS_LOVE, FOODS_AVOID, MEALS, BUDGET_RANGES,
 } from "./config";
+import { servesOccasion } from "@/lib/food/taxonomy";
 import { REASONS, CAUTIONS } from "./reasons";
 import { unverifiedFor } from "./verification";
 import { isHighProtein, isHighFibre, isLowSugar, rowFromFacts } from "@/lib/nutrition/claims";
@@ -172,10 +173,8 @@ export function scoreProduct(facts, profile = {}) {
   if (matchedFoods[0]) reasons.push(REASONS.likes(matchedFoods[0].label));
 
   // 4 · meal match
-  const matchedMealKey = (profile.mealPrefs || []).find((mk) => {
-    const m = MEAL_MATCH[mk];
-    return m && (m.categories.includes(facts.category) || m.keywords.some((kw) => facts.haystack.includes(kw)));
-  });
+  // By the product's category (food.category_occasion), as shelves and search decide it.
+  const matchedMealKey = (profile.mealPrefs || []).find((mk) => servesOccasion(facts.categoryKey, mk));
   b.mealMatch = matchedMealKey ? WEIGHTS.mealMatch : 0;
   if (matchedMealKey) reasons.push(REASONS.meal((MEAL_BY_KEY[matchedMealKey] || {}).label || matchedMealKey));
 
@@ -188,9 +187,10 @@ export function scoreProduct(facts, profile = {}) {
   const pop = facts.recommended ? 1 : clamp(facts.betterThan / 100);
   b.popularity = +(pop * WEIGHTS.popularity).toFixed(2);
 
-  // 7 · KOI trust
-  b.trust = +(clamp(facts.trust / 100) * WEIGHTS.trust).toFixed(2);
-  if (facts.trust >= 85) reasons.push(REASONS.trust());
+  // 7 · KOI trust. Unscreened earns nothing: no score is not a low score, and
+  // it is certainly not a good one.
+  b.trust = isNum(facts.trust) ? +(clamp(facts.trust / 100) * WEIGHTS.trust).toFixed(2) : 0;
+  if (isNum(facts.trust) && facts.trust >= 85) reasons.push(REASONS.trust());
 
   // ── penalties ──
   b.penalties = 0;

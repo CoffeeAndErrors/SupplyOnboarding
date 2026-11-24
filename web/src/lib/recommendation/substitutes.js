@@ -36,7 +36,9 @@ export const MAX_CANDIDATES = 4;
  * Rank KOI's own catalogue as replacements for a product that cannot be bought.
  *
  * Ordering, in priority:
- *   1. Same category — a replacement for peanut butter is not a beverage.
+ *   1. Same category, then same aisle — a replacement for biscuits is
+ *      biscuits before it is chips, and a replacement for peanut butter is
+ *      never a beverage. Categories come from KOI's tree (lib/food/taxonomy.js).
  *   2. KRE score against the shopper's goal profile, so the substitute
  *      preserves what they were actually shopping for rather than merely
  *      filling the hole.
@@ -49,17 +51,26 @@ export const MAX_CANDIDATES = 4;
  *
  * Deterministic: same inputs, same order, no clock and no randomness.
  *
+ * Since Phase 2.5 a caller that holds KOI's substitution edges
+ * (food.substitution_edge) can pass them: a candidate KOI has a recorded
+ * reason for comes first, and carries that reason on `via` so the screen can
+ * say why rather than merely offering it.
+ *
  * @param {object} target      the product that could not be bought
  * @param {Array}  catalogue   KOI's screened products
  * @param {object} [profile]   the shopper's goal profile, when they have one
  * @param {number} [limit]
- * @returns {Array} candidate products, best first
+ * @param {object} [options]
+ * @param {Record<string, Array<{reason: string, basis: object, comparability: number}>>|null} [options.edges]
+ *   edges FROM the target, keyed by the candidate's SKU id
+ * @returns {Array} candidate products, best first; each with `via` when an edge explains it
  */
-export function pickSubstituteCandidates(target, catalogue = [], profile = {}, limit = MAX_CANDIDATES) {
+export function pickSubstituteCandidates(target, catalogue = [], profile = {}, limit = MAX_CANDIDATES, { edges = null } = {}) {
   if (!target || !catalogue.length) return [];
 
   const targetId = String(target.id);
   const targetCategory = target.category || null;
+  const targetKey = target.categoryKey || null;
 
   const scored = [];
   for (const p of catalogue) {
@@ -79,9 +90,15 @@ export function pickSubstituteCandidates(target, catalogue = [], profile = {}, l
       fit = 0;
     }
 
+    const via = (edges?.[String(p.skuId)] ?? []).filter((e) => e?.reason);
     scored.push({
       product: p,
-      sameCategory: targetCategory && p.category === targetCategory ? 1 : 0,
+      via,
+      // How like-for-like KOI recorded the pair as being, when it did.
+      comparability: via.reduce((best, e) => Math.max(best, Number(e.comparability) || 0), 0),
+      // 2: the same category; 1: the same aisle; 0: neither.
+      sameCategory: targetKey && p.categoryKey === targetKey ? 2
+        : targetCategory && p.category === targetCategory ? 1 : 0,
       fit,
       // hasScore, not Number.isFinite(Number(...)): Number(null) is 0, so the
       // intended "unscored sorts last" sentinel of -1 was never reached — an
@@ -93,6 +110,7 @@ export function pickSubstituteCandidates(target, catalogue = [], profile = {}, l
 
   scored.sort(
     (a, b) =>
+      b.comparability - a.comparability ||
       b.sameCategory - a.sameCategory ||
       b.fit - a.fit ||
       b.koiScore - a.koiScore ||
@@ -100,7 +118,7 @@ export function pickSubstituteCandidates(target, catalogue = [], profile = {}, l
       String(a.product.id).localeCompare(String(b.product.id))
   );
 
-  return scored.slice(0, limit).map((s) => s.product);
+  return scored.slice(0, limit).map((s) => (s.via.length ? { ...s.product, via: s.via } : s.product));
 }
 
 /**

@@ -31,7 +31,7 @@
 // GUEST BROWSING IS THE DEFAULT:
 // /store, /store/shop, /store/product/* and /store/cart are deliberately absent
 // below. A shopper fills a cart signed out and is asked to sign in only at
-// checkout — see StoreNavigation for the same rule in the UI.
+// checkout — see components/store/shell/StoreChrome.jsx for the same rule in the UI.
 // ============================================================================
 
 import { NextResponse } from 'next/server';
@@ -46,6 +46,9 @@ export async function proxy(request) {
   // The matcher should already guarantee this, but a matcher edit should not be
   // able to turn this file into an auth round trip on every request.
   if (!isProtected) return NextResponse.next();
+
+  // Demo mode (development only, lib/supabase/demo): the demo shopper is signed in.
+  if (process.env.NEXT_PUBLIC_KOI_DEMO === '1' && process.env.NODE_ENV !== 'production') return NextResponse.next();
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;

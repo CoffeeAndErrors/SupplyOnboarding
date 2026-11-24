@@ -15,6 +15,7 @@ import { filterEligible } from "@/lib/recommendation/eligibilityFilter.js";
 import { scoreProduct } from "@/lib/recommendation/scoringEngine.js";
 import { FOODS_AVOID, DIET_EXCLUSIONS } from "@/lib/recommendation/config.js";
 import { REASONS, CAUTIONS } from "@/lib/recommendation/reasons.js";
+import { unverifiedFor, provesAllergenAbsence } from "@/lib/recommendation/verification.js";
 
 function product(over = {}) {
   return {
@@ -34,7 +35,9 @@ function product(over = {}) {
 }
 
 const partial = (...names) => names.map((name) => ({ name, desc: null }));
-const verified = (ingredientsText, allergens = []) => ({ verified: true, ingredientsText, allergens });
+const TODAY = new Date().toISOString();
+const A_YEAR_AGO = new Date(Date.now() - 400 * 86_400_000).toISOString();
+const verified = (ingredientsText, allergens = []) => ({ verified: true, ingredientsText, allergens, confirmedAt: TODAY });
 
 const eligible = (p, profile) => filterEligible([extractFacts(p)], profile).eligible.length === 1;
 const score = (p, profile) => scoreProduct(extractFacts(p), profile);
@@ -46,12 +49,12 @@ test("every avoid key carries a kind the database knows", () => {
   for (const a of FOODS_AVOID) assert.ok(kinds.has(a.kind), `${a.key} has kind ${a.kind}`);
 });
 
-test("the avoid keys match avoided_item after migration 00021", () => {
+test("the avoid keys match avoided_item after migration 00067", () => {
   // user_avoided_food has a foreign key to avoided_item, so a key here with no
-  // row there fails the moment a shopper saves it.
+  // row there fails the moment a shopper saves it. 00067 added onion_garlic.
   assert.deepEqual(FOODS_AVOID.map((a) => a.key).sort(), [
     "artificial_colours", "artificial_flavours", "artificial_sweeteners", "caffeine",
-    "eggs", "fish", "gluten", "high_sodium", "lactose", "milk", "palm_oil", "peanuts",
+    "eggs", "fish", "gluten", "high_sodium", "lactose", "milk", "onion_garlic", "palm_oil", "peanuts",
     "preservatives", "red_meat", "refined_sugar", "shellfish", "soy", "spicy", "tree_nuts",
   ]);
 });
@@ -79,12 +82,84 @@ test("a verified label can", () => {
 });
 
 test("a machine-read label says what the pack lists, not that the food is safe", () => {
-  const p = product({ label: { evidence: "machine_read", ingredientsText: "rolled oats, jaggery", allergens: [], mayContain: [] } });
+  const p = product({ label: { evidence: "machine_read", ingredientsText: "rolled oats, jaggery", allergens: [], mayContain: [], confirmedAt: TODAY, readAgreement: 2 } });
   const s = score(p, { foodsAvoid: ["peanuts", "milk"] });
   assert.ok(s.reasons.includes(REASONS.notListedOnPack(["Peanuts", "Milk"])));
   assert.equal(REASONS.notListedOnPack(["Peanuts", "Milk"]), "No peanuts or milk listed on the pack");
   assert.ok(!s.reasons.includes(REASONS.noAvoid()));
   assert.deepEqual(s.cautions, [], "the whole list was read, so nothing is 'not verified'");
+});
+
+test("a machine read needs two agreeing readings to say an allergen is absent (00063)", () => {
+  const read = (readAgreement) => product({ label: { evidence: "machine_read", ingredientsText: "rolled oats, jaggery", allergens: [], mayContain: [], confirmedAt: TODAY, readAgreement } });
+  for (const agreement of [null, 1]) {
+    const s = score(read(agreement), { foodsAvoid: ["peanuts"] });
+    assert.ok(!s.reasons.includes(REASONS.notListedOnPack(["Peanuts"])), `agreement ${agreement} cannot say peanuts are absent`);
+    assert.deepEqual(s.cautions, [CAUTIONS.notVerifiedFor(["Peanuts"])]);
+  }
+  assert.deepEqual(score(read(3), { foodsAvoid: ["peanuts"] }).cautions, []);
+
+  // Still the complete list: it settles the diet, and what it lists still counts.
+  const one = extractFacts(read(1));
+  assert.equal(one.readAgreement, 1);
+  assert.equal(unverifiedFor(one, { dietType: "vegan" }).diet, null);
+  assert.equal(eligible(product({ label: { evidence: "machine_read", ingredientsText: "oats, peanuts", allergens: [], mayContain: [], confirmedAt: TODAY, readAgreement: 1 } }), { foodsAvoid: ["peanuts"] }), false);
+
+  assert.equal(provesAllergenAbsence("verified", null), true, "a person's check needs no count");
+  assert.equal(provesAllergenAbsence("partial", 5), false, "a partial list never proves absence");
+});
+
+test("a label unconfirmed for a year proves what it lists, not what it leaves out", () => {
+  const listed = product({ label: { evidence: "machine_read", ingredientsText: "rolled oats, peanuts", allergens: [], mayContain: [], confirmedAt: A_YEAR_AGO } });
+  assert.equal(extractFacts(listed).ingredientEvidence, "partial");
+  assert.equal(eligible(listed, { foodsAvoid: ["peanuts"] }), false, "what an old label lists still counts");
+
+  const silent = product({ label: { evidence: "machine_read", ingredientsText: "rolled oats", allergens: [], mayContain: [], confirmedAt: A_YEAR_AGO } });
+  const s = score(silent, { foodsAvoid: ["peanuts"] });
+  assert.ok(!s.reasons.includes(REASONS.notListedOnPack(["Peanuts"])), "an old label cannot say what is not listed");
+  assert.deepEqual(s.cautions, [CAUTIONS.notVerifiedFor(["Peanuts"])]);
+});
+
+test("a label with no confirmation date is not treated as current", () => {
+  const p = product({ label: { evidence: "machine_read", ingredientsText: "oats", allergens: [], mayContain: [] } });
+  assert.equal(extractFacts(p).ingredientEvidence, "partial");
+});
+
+test("a brand name is not an ingredient: 'Sweet Karam Coffee' does not make a namkeen caffeinated", () => {
+  const mixture = product({ name: "Madras Mixture", brand: "Sweet Karam Coffee", goodIngredients: partial("Peanuts", "Gram flour") });
+  const facts = extractFacts(mixture);
+  assert.equal(facts.contains.has("caffeine"), false);
+  assert.equal(facts.contains.has("peanut"), true, "what the product lists still counts");
+  assert.equal(extractFacts(product({ name: "Filter Coffee Powder", brand: "Sweet Karam Coffee" })).contains.has("caffeine"), true, "the product's own name still does");
+  assert.equal(extractFacts(product({ name: "Mixture", brand: "Peanut Co" })).contains.has("peanut"), true, "allergens still read the brand: over-reading only hides a product");
+});
+
+test("a preservative on the label raises the filter, whatever the brand's tag says", () => {
+  const read = (ingredientsText) => product({
+    tags: ["No Preservatives"],
+    label: { evidence: "machine_read", ingredientsText, allergens: [], mayContain: [], confirmedAt: TODAY },
+  });
+  const preserved = read("Mango pulp, sugar, preservative (INS 211)");
+  const plain = read("Mango pulp, sugar");
+  assert.equal(extractFacts(preserved).contains.has("preservatives"), true);
+  assert.equal(extractFacts(plain).contains.has("preservatives"), false);
+  assert.equal(extractFacts(product({ tags: ["No Preservatives"] })).contains.has("preservatives"), false);
+
+  // Nothing used to set this flag, so a pack printing INS 211 was told to a
+  // shopper avoiding preservatives as "No preservatives listed on the pack".
+  const profile = { foodsAvoid: ["preservatives"] };
+  assert.ok(!score(preserved, profile).reasons.includes(REASONS.notListedOnPack(["Preservatives"])));
+  assert.ok(score(plain, profile).reasons.includes(REASONS.notListedOnPack(["Preservatives"])));
+  assert.ok(score(preserved, profile).raw < score(plain, profile).raw);
+});
+
+test("synthetic colours, sweeteners and artificial flavours raise their filters; natural ones do not", () => {
+  const listed = (text) => extractFacts(product({ goodIngredients: partial(text) })).contains;
+  assert.equal(listed("Tartrazine").has("artificial_colour"), true);
+  assert.equal(listed("Beetroot Red").has("artificial_colour"), false);
+  assert.equal(listed("Sucralose").has("artificial_sweetener"), true);
+  assert.equal(listed("Steviol Glycosides").has("artificial_sweetener"), false);
+  assert.equal(listed("Artificial Flavouring Substances").has("artificial_flavour"), true);
 });
 
 test("an unverified product ranks below an identical verified one", () => {
@@ -130,6 +205,23 @@ test("Indian label names count: kaju is a cashew, and a dry-fruit mix carries nu
 test("peanuts are not tree nuts", () => {
   assert.equal(eligible(product({ goodIngredients: partial("Peanuts") }), { foodsAvoid: ["tree_nuts"] }), true);
   assert.equal(eligible(product({ goodIngredients: partial("Peanuts") }), { foodsAvoid: ["peanuts"] }), false);
+});
+
+// ── Meat ───────────────────────────────────────────────────────────────────
+
+test("Red Meat means red meat: chicken stays for that shopper, and no meat stays for a vegetarian", () => {
+  const chicken = product({ goodIngredients: partial("Chicken", "Rice") });
+  assert.equal(eligible(chicken, { foodsAvoid: ["red_meat"] }), true);
+  assert.equal(eligible(product({ goodIngredients: partial("Mutton") }), { foodsAvoid: ["red_meat"] }), false);
+  assert.equal(eligible(chicken, { dietType: "vegetarian" }), false);
+  assert.equal(eligible(product({ goodIngredients: partial("Gelatin") }), { dietType: "vegetarian" }), false, "gelatin is made from animals");
+});
+
+test("meal occasions come from the category, not substrings of the name", () => {
+  const facts = (p) => extractFacts(product(p));
+  assert.equal(facts({ name: "Energy Laddubar" }).categoryKey, "snacks.bars");
+  assert.equal(scoreProduct(facts({ name: "Energy Laddubar" }), { mealPrefs: ["post_workout"] }).breakdown.mealMatch > 0, true);
+  assert.equal(scoreProduct(facts({ name: "Barley Rusk" }), { mealPrefs: ["post_workout"] }).breakdown.mealMatch, 0, "'bar' inside barley is not a bar");
 });
 
 // ── Diets ──────────────────────────────────────────────────────────────────

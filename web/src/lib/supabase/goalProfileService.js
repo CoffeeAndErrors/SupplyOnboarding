@@ -21,6 +21,7 @@
 // ============================================================================
 
 import { getSupabaseClient } from "./client";
+import { profileFromRow, memberPayload, avoidsPayload, fromGoalSetup } from "@/lib/household/profile";
 
 /** Single-value preference tables, and the profile field each one stores. */
 const SINGLE_VALUE = [
@@ -104,6 +105,41 @@ export async function saveGoalProfile(uid, profile) {
       .insert(keys.map((k) => ({ profile_id: uid, [column]: k })));
     if (insError) throw insError;
   }
+
+  // And through to the household: the member marked as the account holder is
+  // this same person (00050), so their profile follows their goal setup rather
+  // than drifting from it. Nothing else in the household is touched, and a
+  // shopper with no household, or no "Me" member, simply has nothing to update.
+  await syncAccountMember(uid, profile);
+}
+
+/**
+ * Carry a saved goal setup onto the household member linked to this account.
+ *
+ * @param {string} uid the shopper's Supabase Auth user id
+ * @param {object} profile from goalStore
+ * @returns {Promise<{ synced: boolean, memberId?: string }>}
+ */
+export async function syncAccountMember(uid, profile) {
+  if (!uid || !profile) return { synced: false };
+  const supabase = getSupabaseClient();
+  const { data: member, error } = await supabase
+    .from("household_member")
+    // Every column: the save below sends every field of the form, so a field not
+    // read here (favourites, target weight, spice, carbs, fat) would be wiped.
+    .select("*, household_member_avoid(avoid_key, severity)")
+    .eq("account_profile_id", uid)
+    .maybeSingle();
+  if (error || !member) return { synced: false };
+
+  const form = fromGoalSetup(profileFromRow(member), profile);
+  const { error: saveError } = await supabase.rpc("save_household_member", {
+    p_household_id: member.household_id,
+    p_member: memberPayload(form),
+    p_avoids: avoidsPayload(form),
+  });
+  if (saveError) return { synced: false };
+  return { synced: true, memberId: member.id };
 }
 
 /**

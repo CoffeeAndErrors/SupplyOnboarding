@@ -11,19 +11,21 @@
 // text query + brand context surfaced by the command search.
 // ============================================================================
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import EditorialNav from "@/components/store/landing/EditorialNav";
 import { C } from "@/components/store/landing/tokens";
 import { getSeedCatalogue, GOALS, INGREDIENTS, SORTS } from "@/components/store/shop/shopData";
 import { useCatalogue } from "@/lib/data/useCatalogue";
 import { averageScore } from "@/lib/score";
 import CommandSearch from "@/components/store/shop/CommandSearch";
+import { OPEN_SHOP_SEARCH } from "@/components/store/shell/StoreHeader";
+import { demandTerms } from "@/lib/demand/terms";
+import { reportDemand } from "@/lib/demand/report";
 import { GoalSetupModal } from "@/components/store/shop/GoalSetup";
 import PersonalShelves from "@/components/store/shop/PersonalShelves";
 import IntentChips from "@/components/store/shop/IntentChips";
 import {
-  interpret, resolveIntent, describeIntent, removeFromIntent, suggestRelaxations, isEmptyIntent,
+  interpret, resolveIntent, describeIntent, removeFromIntent, suggestRelaxations, isEmptyIntent, adoptRefinement,
 } from "@/lib/ai/intent";
 import { CAUTIONS } from "@/lib/recommendation/reasons";
 import ConnectSwiggy from "@/components/store/marketplace/ConnectSwiggy";
@@ -32,20 +34,51 @@ import { useCatalogueSupply } from "@/lib/marketplace/useCatalogueSupply";
 import { attachSupply } from "@/lib/marketplace/browser";
 import { useGoalStore } from "@/store/goalStore";
 import {
-  ShopHero, FeaturedEditorial, Shelf, GoalRail, IngredientStrip,
-  FilterBar, FilterDrawer, ProductGrid, MiniCart,
+  FeaturedEditorial, Shelf, GoalRail, IngredientStrip,
+  FilterBar, FilterDrawer, ProductGrid,
 } from "@/components/store/shop/ShopSections";
 import { KoiScoreModal, CompareModal, WhyKoiDrawer } from "@/components/store/shop/ProductOverlays";
+import ShelfHead from "@/components/store/shop/ShelfHead";
+import { nutrientValue } from "@/components/store/shop/ShopProductCard";
+import { useEmber } from "@/components/store/ember/Ember";
+import { useKoiVoice } from "@/store/koiVoiceStore";
+import { Flip } from "@/lib/motion/koiMotion";
+import { useBarFacts } from "@/components/store/shell/useBarPrompt";
 
-const SHOP_LINKS = [
-  { label: "Collections", href: "#collections" },
-  { label: "Goals", href: "#goals" },
-  { label: "Ingredients", href: "#ingredients" },
-  { label: "Shop all", href: "#grid" },
-];
+// The lenses: each is a sentence KOI reads with the intent engine, exactly as if
+// the shopper had typed it. Kept to the ones the engine understands.
+const LENSES = ["High Protein", "No Palm Oil", "Low Sugar", "Gut Health", "Kids Nutrition", "Post-Workout", "No Maida"];
+
+// KOI's lines on the shelf. House rule: no numbers in KOI's mouth.
+const LINES = {
+  open: "Ask for what you need, or pick a lens. I’ll pull focus.",
+  fit: "These fit what you asked. I’ve ringed where to start.",
+  fitUnverified: "These fit. A few labels don’t say enough for me to vouch for them, so I’ve marked those.",
+  none: "Nothing on the shelf fits that yet. Loosen one thing and I’ll look again.",
+};
+
 
 export default function ShopPage() {
   const router = useRouter();
+  const ember = useEmber();
+  const say = useKoiVoice((s) => s.say);
+
+  // The camera: a Flip state captured just before focus changes, played by the
+  // grid once React has committed the new shelf (ShopSections → ProductGrid).
+  const flipState = useRef(null);
+  const settleLine = useRef(null);
+  const capture = () => {
+    flipState.current = Flip.getState(document.querySelectorAll(".koi-shop [data-flip-id]"));
+  };
+  const takeFlip = () => {
+    const s = flipState.current;
+    flipState.current = null;
+    return s;
+  };
+  const timers = useRef([]);
+  const later = (fn, ms) => timers.current.push(setTimeout(fn, ms));
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+  const [activeLens, setActiveLens] = useState(null);
 
   // ── Data ──
   // Seed catalogue for an instant first paint (empty in production - see
@@ -75,6 +108,8 @@ export default function ShopPage() {
   const [activeGoal, setActiveGoal] = useState(null);
   const [activeBrand, setActiveBrand] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
+  // The KOI bar builds on the search ("Like “oats”, but cheaper").
+  useBarFacts({ query: searchQuery.trim().slice(0, 40) || null });
   const [activeSort, setActiveSort] = useState("Recommended");
   const [filterPrice, setFilterPrice] = useState("All");
   const [filterScore, setFilterScore] = useState("All");
@@ -84,6 +119,8 @@ export default function ShopPage() {
   // not searched, or when nothing structured could be read out of the text — in
   // which case `searchQuery` carries the raw string and behaves as it always has.
   const [intent, setIntent] = useState(null);
+  // The search's whole reading, before any chip was taken off (for "Put them back").
+  const [asked, setAsked] = useState(null);
 
   // ── UI state ──
   const [searchOpen, setSearchOpen] = useState(false);
@@ -106,7 +143,7 @@ export default function ShopPage() {
   const [selectedCompareProduct, setSelectedCompareProduct] = useState(null);
   const [selectedInsightProduct, setSelectedInsightProduct] = useState(null);
 
-  // ⌘K / Ctrl+K to summon the command search
+  // ⌘K / Ctrl+K, or the store header's search, summons the command search.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -114,8 +151,13 @@ export default function ShopPage() {
         setSearchOpen(true);
       }
     };
+    const onHeader = () => setSearchOpen(true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener(OPEN_SHOP_SEARCH, onHeader);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener(OPEN_SHOP_SEARCH, onHeader);
+    };
   }, []);
 
   const categories = useMemo(() => {
@@ -133,6 +175,28 @@ export default function ShopPage() {
   );
 
   const intentChips = useMemo(() => describeIntent(intent), [intent]);
+
+  // ── Only what this shop can actually sell ─────────────────────────────────
+  // The ingredient strip and the goal rail were written lists. Tapping one
+  // searched for it, and a word the catalogue cannot answer left the grid
+  // unfiltered — so "A2 Ghee" looked like a shelf and delivered everything.
+  // Each is now kept only when it names something in stock, by the same reading
+  // the tap itself does (interpret + resolveIntent for an ingredient, the
+  // product's own goal tags for a goal).
+  const ingredientsForSale = useMemo(
+    () => INGREDIENTS.filter(({ name }) => {
+      const ids = resolveIntent(products, interpret(name), goalProfile).ids;
+      return ids instanceof Set && ids.size > 0;
+    }),
+    [products, goalProfile],
+  );
+
+  const goalsForSale = useMemo(
+    () => GOALS.filter(({ name }) => products.some((p) => [...(p.goals || []), ...(p.goalTags || []), ...(p.tags || [])]
+      .filter(Boolean)
+      .some((tag) => String(tag).toLowerCase() === name.toLowerCase()))),
+    [products],
+  );
 
   // Preserved filter + sort logic (extended with query + brand + interpreted intent)
   const filteredProducts = useMemo(() => {
@@ -207,7 +271,26 @@ export default function ShopPage() {
     setIsFilterOpen(false);
   };
 
+  // KOI pulls focus: it starts reading, the grid moves, then it points (onSettled).
+  const pullFocus = (reading = true) => {
+    capture();
+    ember.mark(null);
+    if (reading) ember.status("Reading labels");
+    settleLine.current = reading ? "focus" : "open";
+    // A focus change that left the shelf exactly as it was never reaches the
+    // grid; KOI still has to stop reading.
+    later(() => {
+      if (!settleLine.current) return;
+      settleLine.current = null;
+      flipState.current = null;
+      ember.status(null);
+      ember.home();
+    }, 1800);
+  };
+
   const clearEverything = () => {
+    pullFocus(false);
+    setActiveLens(null);
     setActiveCategory("All");
     setActiveGoal(null);
     setActiveBrand(null);
@@ -217,7 +300,7 @@ export default function ShopPage() {
   };
 
   const contextLabel = activeGoal || activeBrand || (searchQuery ? `“${searchQuery}”` : null);
-  const clearContext = () => { setActiveGoal(null); setActiveBrand(null); setSearchQuery(""); setIntent(null); };
+  const clearContext = () => { pullFocus(false); setActiveLens(null); setActiveGoal(null); setActiveBrand(null); setSearchQuery(""); setIntent(null); setAsked(null); };
 
   const selectProduct = (p) => router.push(`/store/product/${p.id}`);
 
@@ -243,6 +326,8 @@ export default function ShopPage() {
     const meaningful = Boolean(next && (narrowing || next.unresolved.length));
 
     setIntent(meaningful ? next : null);
+    // The whole reading, so chips taken off can be put back (States board).
+    setAsked(meaningful ? next : null);
     // A sentence must never be used as a substring again — that is the bug this
     // replaces. When the intent narrows, resolveIntent has already applied any
     // residual word; otherwise that word is all there is to search on.
@@ -253,19 +338,75 @@ export default function ShopPage() {
     return meaningful;
   };
 
-  const applyFromSearch = ({ query, goal, brand, intent: incoming }) => {
+  // A model's refinement of the reading already on screen (Phase 4.1). It can
+  // only tighten it (adoptRefinement), and it is dropped if the shopper has
+  // searched again meanwhile. With no model configured, or signed out, the
+  // route answers "nothing to refine" and the grid does not move.
+  const latestQuery = useRef(null);
+  const refineSearch = async (query, local) => {
+    latestQuery.current = query;
+    try {
+      const response = await fetch("/api/assistant/interpret", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: query }),
+      });
+      if (!response.ok) return;
+      const body = await response.json();
+      if (!body?.refined || latestQuery.current !== query) return;
+      const merged = adoptRefinement(local, body.intent, query);
+      const substance = ({ profile, view, text, unresolved }) => JSON.stringify({ profile, view, text, unresolved });
+      if (substance(merged) !== substance(local)) applyIntent(merged);
+    } catch {
+      // The deterministic reading stands.
+    }
+  };
+
+  const applyFromSearch = ({ query, goal, brand, intent: incoming, lens = null }) => {
     let readBack = false;
-    if (goal !== undefined) { setActiveGoal(goal); setActiveBrand(null); setSearchQuery(""); setIntent(null); }
-    else if (brand !== undefined) { setActiveBrand(brand); setActiveGoal(null); setSearchQuery(""); setIntent(null); }
-    else if (incoming !== undefined) readBack = applyIntent(incoming);
-    else if (query !== undefined) readBack = applyIntent(interpret(query));
+    pullFocus(true);
+    setActiveLens(lens);
+    if (goal !== undefined) { setActiveGoal(goal); setActiveBrand(null); setSearchQuery(""); setIntent(null); setAsked(null); }
+    else if (brand !== undefined) { setActiveBrand(brand); setActiveGoal(null); setSearchQuery(""); setIntent(null); setAsked(null); }
+    else if (incoming !== undefined || query !== undefined) {
+      const next = incoming !== undefined ? incoming : interpret(query);
+      readBack = applyIntent(next);
+      if (query && query.length <= 200) refineSearch(query, next);
+      // The words the catalogue could not answer, counted to decide what to
+      // stock next. Never the sentence — see lib/demand/terms.js.
+      reportDemand(demandTerms(next, products));
+    }
     setActiveCategory("All");
     // Land on the chip row when there is one to read: it explains why the grid
     // below it changed. Otherwise the grid itself is the answer.
     scrollToId(readBack ? "intent" : "grid");
   };
 
+  // Words typed into the header's search on another page arrive as ?q=. They
+  // were dropped before — nothing here read them. Read once, after the
+  // catalogue is in, so the demand count is taken against real products.
+  const askedQuery = useRef(null);
+  useEffect(() => {
+    if (askedQuery.current !== null || !products.length) return undefined;
+    const q = new URLSearchParams(window.location.search).get("q")?.trim() ?? "";
+    askedQuery.current = q;
+    if (!q) return undefined;
+    const t = setTimeout(() => applyFromSearch({ query: q.slice(0, 200) }), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on the first catalogue
+  }, [products.length]);
+
+  // Chips taken off come back in one tap, as the search first read them.
+  const putBack = () => {
+    if (!asked) return;
+    pullFocus(true);
+    applyIntent(asked);
+    scrollToId("intent");
+  };
+
   const removeChip = (chip) => {
+    pullFocus(true);
+    setActiveLens(null);
     const next = removeFromIntent(intent, chip);
     setIntent(!isEmptyIntent(next) || next.unresolved.length ? next : null);
   };
@@ -289,6 +430,59 @@ export default function ShopPage() {
     return count ? CAUTIONS.unverifiedInResults(count, filteredProducts.length, allergens, diet) : null;
   }, [resolved, filteredProducts]);
 
+  // ── KOI on the shelf ──
+  const focused = Boolean(intent || activeGoal || activeBrand || searchQuery || activeCategory !== "All");
+  // The grid has moved: KOI says what it found and rings where to start.
+  const onSettled = (plate) => {
+    const mode = settleLine.current;
+    settleLine.current = null;
+    if (!mode) return;
+    if (mode === "open") { ember.status(null); ember.home(); say(LINES.open); return; }
+    // The grid calls the onSettled of the render that committed this shelf, so
+    // these are the figures it is showing.
+    const count = filteredProducts.length;
+    const unverified = Boolean(unverifiedNote);
+    if (!count) { ember.status(null); ember.home(); say(LINES.none); return; }
+    ember.status(count === 1 ? "1 match" : `${count} match`);
+    say(unverified ? LINES.fitUnverified : LINES.fit);
+    if (plate) later(() => ember.go(plate, ember.perch(plate, 8), () => ember.mark(plate, "ring", 8)), 650);
+  };
+
+  // KOI's opening line, and its dot let go of the shelf when the page leaves.
+  useEffect(() => {
+    say(LINES.open);
+    return () => ember.rest();
+  }, [say, ember]);
+
+  // The KOI bar on this page asks the shelf directly (KoiBar dispatches koi:ask).
+  const askRef = useRef(applyFromSearch);
+  useEffect(() => { askRef.current = applyFromSearch; });
+  useEffect(() => {
+    const onAsk = (e) => { const q = String(e.detail ?? "").trim(); if (q) askRef.current({ query: q.slice(0, 200) }); };
+    window.addEventListener("koi:ask", onAsk);
+    return () => window.removeEventListener("koi:ask", onAsk);
+  }, []);
+
+  // Why a card is in focus: a figure off its own label, for the limit the
+  // shopper asked about; or a warning when KOI could not check it. Never a claim
+  // the data does not hold.
+  const whyOf = (p) => {
+    if (!resolved.ids) return null;
+    if (resolved.unverified?.ids?.has(p.id)) {
+      const what = [...(resolved.unverified.allergens || []), resolved.unverified.diet].filter(Boolean)[0];
+      return { text: what ? `Not checked for ${String(what).toLowerCase()}` : "Not fully checked", tone: "warn" };
+    }
+    const v = intent?.view || {};
+    if (v.minProtein != null || v.proteinClaim) { const x = nutrientValue(p, "Protein"); return x ? { text: `${x} protein / 100 g`, tone: "ok" } : null; }
+    if (v.maxSugar != null || v.sugarClaim) { const x = nutrientValue(p, "Sugar"); return x ? { text: `${x} sugar / 100 g`, tone: "ok" } : null; }
+    return null;
+  };
+
+  const focusName = activeLens || activeGoal || activeBrand || (intentChips[0]?.label) || (searchQuery ? `“${searchQuery}”` : null) || (activeCategory !== "All" ? activeCategory : "Your ask");
+  const focusLabel = focused
+    ? `${focusName} · ${filteredProducts.length} of ${products.length} in focus`
+    : `Showing everything · ${products.length} products`;
+
   const cardHandlers = {
     onSelect: selectProduct,
     onOpenScore: setSelectedScoreProduct,
@@ -305,23 +499,37 @@ export default function ShopPage() {
     : activeCategory;
 
   return (
-    <div className="koi-shop relative w-full overflow-x-clip" style={{ background: C.offwhite }}>
-      <EditorialNav links={SHOP_LINKS} onSearchClick={() => setSearchOpen(true)} />
-
+    <div className="koi-shop relative w-full overflow-x-clip" style={{ background: "var(--koi-bg)" }}>
       <main>
-          <ShopHero
+          {/* On the shelf: the title, the lenses, and what KOI is showing. */}
+          <ShelfHead
+            lenses={LENSES}
+            activeLens={activeLens}
+            onLens={(l) => (l ? applyFromSearch({ query: l, lens: l }) : clearContext())}
             onOpenSearch={() => setSearchOpen(true)}
-            onSuggest={(text) => applyFromSearch({ query: text })}
+            focusLabel={focusLabel}
+            focused={focused}
+            onClear={clearEverything}
             stats={stats}
           />
 
-          {/* Start the journey: set a goal, KOI tunes to you, then keep scrolling */}
-          <GoalRail goals={GOALS} activeGoal={activeGoal} onPick={(g) => { setActiveGoal(g); if (g) scrollToGrid(); }} onOpenGoal={() => setGoalOpen(true)} />
+          {/* What KOI understood, as chips the shopper can take back off.
+              Renders nothing until someone actually searches. */}
+          <IntentChips
+            chips={intentChips}
+            onRemove={removeChip}
+            onClearAll={clearContext}
+            onPutBack={asked && intent !== asked ? putBack : null}
+            cleared={Boolean(asked && !intent)}
+            matchCount={resolved.ids ? filteredProducts.length : null}
+            relaxations={relaxations}
+            unverifiedNote={unverifiedNote}
+          />
 
           {/* Whether KOI can answer "can I get this" at all. Renders nothing
               when signed out or when no supply source is configured, so the
               honest default state of the shop is unchanged. */}
-          <div className="mx-auto w-full max-w-[1200px] px-5 sm:px-8">
+          <div className="mx-auto w-full max-w-[1440px] px-[clamp(16px,4vw,52px)]">
             <ConnectSwiggy next="/store/shop" compact onChange={() => setSupplyKey((k) => k + 1)} />
             {/* A provider declining the area is a real answer and worth saying.
                 Everything still renders — KOI screened these products either
@@ -333,6 +541,31 @@ export default function ShopPage() {
               </p>
             )}
           </div>
+
+          {/* Sticky filters + the shelf itself */}
+          <FilterBar
+            categories={categories}
+            activeCategory={activeCategory}
+            setActiveCategory={(c) => { pullFocus(false); setActiveCategory(c); }}
+            sorts={SORTS}
+            activeSort={activeSort}
+            setActiveSort={(s) => { capture(); setActiveSort(s); }}
+            onOpenFilter={() => setIsFilterOpen(true)}
+            activeFilterCount={activeFilterCount}
+            count={filteredProducts.length}
+            context={contextLabel}
+            onClearContext={clearContext}
+          />
+          <ProductGrid
+            title={gridTitle}
+            products={filteredProducts}
+            handlers={cardHandlers}
+            onClear={clearEverything}
+            catalogueEmpty={products.length === 0}
+            whyOf={whyOf}
+            takeFlip={takeFlip}
+            onSettled={onSettled}
+          />
 
           {/* KRE-personalised shelves (renders only when a goal profile exists) */}
           <PersonalShelves products={products} />
@@ -360,7 +593,9 @@ export default function ShopPage() {
             background={C.mint}
           />
 
-          <IngredientStrip ingredients={INGREDIENTS} onPick={(name) => applyFromSearch({ query: name })} />
+          {ingredientsForSale.length > 0 && (
+            <IngredientStrip ingredients={ingredientsForSale} onPick={(name) => applyFromSearch({ query: name })} />
+          )}
 
           <Shelf
             eyebrow="Fresh from verification"
@@ -370,32 +605,8 @@ export default function ShopPage() {
             handlers={cardHandlers}
           />
 
-          {/* What KOI understood, as chips the shopper can take back off.
-              Renders nothing until someone actually searches. */}
-          <IntentChips
-            chips={intentChips}
-            onRemove={removeChip}
-            onClearAll={clearContext}
-            matchCount={resolved.ids ? filteredProducts.length : null}
-            relaxations={relaxations}
-            unverifiedNote={unverifiedNote}
-          />
-
-          {/* Sticky filters + full catalogue */}
-          <FilterBar
-            categories={categories}
-            activeCategory={activeCategory}
-            setActiveCategory={setActiveCategory}
-            sorts={SORTS}
-            activeSort={activeSort}
-            setActiveSort={setActiveSort}
-            onOpenFilter={() => setIsFilterOpen(true)}
-            activeFilterCount={activeFilterCount}
-            count={filteredProducts.length}
-            context={contextLabel}
-            onClearContext={clearContext}
-          />
-          <ProductGrid title={gridTitle} products={filteredProducts} handlers={cardHandlers} onClear={clearEverything} catalogueEmpty={products.length === 0} />
+          {/* Set a goal, KOI tunes the shelves to you; or browse by intention. */}
+          <GoalRail goals={goalsForSale} activeGoal={activeGoal} onPick={(g) => { pullFocus(Boolean(g)); setActiveLens(null); setActiveGoal(g); if (g) scrollToGrid(); }} onOpenGoal={() => setGoalOpen(true)} />
       </main>
 
       {/* Universal command search */}
@@ -427,8 +638,6 @@ export default function ShopPage() {
       <KoiScoreModal product={selectedScoreProduct} onClose={() => setSelectedScoreProduct(null)} />
       <CompareModal product={selectedCompareProduct} onClose={() => setSelectedCompareProduct(null)} />
       <WhyKoiDrawer product={selectedInsightProduct} onClose={() => setSelectedInsightProduct(null)} />
-
-      <MiniCart />
 
       {/* Shared keyframes + utilities (GPU-accelerated, motion-aware) */}
       <style jsx global>{`

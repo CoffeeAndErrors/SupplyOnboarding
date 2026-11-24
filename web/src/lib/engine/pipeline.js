@@ -2,6 +2,7 @@
 // KOI ENGINE — One upload, read twice, published when the readings agree
 //
 // SERVER ONLY. runExtraction(uploadId):
+//   evaluation gate (evalGate.js: no reading by an unevaluated reader) ->
 //   upload row -> image from Storage -> two independent model readings ->
 //   Zod parse -> deterministic checks -> agreement (autopublish.js) ->
 //   engine.extraction_outputs -> engine.publish_machine_read() for the groups
@@ -21,8 +22,11 @@ import { getServiceClient } from "@/lib/supabase/admin";
 import { LabelReading, PROMPT_VERSION } from "./labelSchema";
 import { runChecks } from "./checks";
 import { toReviewItems } from "./proposals";
-import { planAutoPublish } from "./autopublish";
+import { planAutoPublish, pickPrimary } from "./autopublish";
 import { readLabel } from "./providers/openai";
+import { readUntilAgreed, whyUnsettled } from "./agree";
+import { rescoreSkus } from "@/lib/screening/rescore";
+import { evaluationGate } from "./evalGate";
 
 // uploads.file_type values that can carry a label.
 export const LABEL_FILE_TYPES = Object.freeze(["nutrition_label", "ingredient_label", "back_image", "front_image"]);
@@ -40,9 +44,14 @@ const fail = (message) => { throw Object.assign(new Error(message), { expose: tr
  * @param {string} uploadId public.uploads id
  * @returns {Promise<{ outputId: string, confidence: number, groups: string[] }>}
  */
-export async function runExtraction(uploadId) {
+export async function runExtraction(uploadId, { gate = null } = {}) {
   const db = engineDb();
   const engine = db.schema("engine");
+
+  // A reader whose prompt and models have not passed the evaluation set reads
+  // nothing (evalGate.js). Nothing is spent and nothing is published.
+  const open = gate ?? await evaluationGate(engine);
+  if (!open.open) fail(open.reason);
 
   const { data: upload, error: uploadError } = await db
     .from("uploads")
@@ -77,33 +86,80 @@ export async function runExtraction(uploadId) {
     ]);
     if (first.status === "rejected") throw first.reason;
 
-    const parsed = LabelReading.safeParse(first.value.json);
-    if (!parsed.success) {
-      fail(`The reading did not match the label schema: ${parsed.error.issues.slice(0, 3).map((i) => i.path.join(".")).join(", ")}`);
+    const firstParse = LabelReading.safeParse(first.value.json);
+    if (!firstParse.success) {
+      fail(`The reading did not match the label schema: ${firstParse.error.issues.slice(0, 3).map((i) => i.path.join(".")).join(", ")}`);
     }
     const verify = second.status === "fulfilled" ? LabelReading.safeParse(second.value.json) : null;
-    const secondReading = verify?.success ? verify.data : null;
+    const verifyReading = verify?.success ? verify.data : null;
+
+    // Publish from whichever reading took the per-100 column; the other is the
+    // check. Everything below reads `parsed.data` as the primary.
+    const [primary, other] = pickPrimary(firstParse.data, verifyReading);
+    const swapped = primary !== firstParse.data;
+    const parsed = { data: primary };
+    const secondReading = other;
+    const primaryMeta = swapped ? second.value : first.value;
+    const otherMeta = swapped ? first.value : (second.status === "fulfilled" ? second.value : null);
 
     const sku = upload.skus || {};
+    // The rest of the catalogue, so a photo is refused only when it names a
+    // different product KOI lists (autopublish.js#matchesProduct).
+    const { data: catalogue, error: catalogueError } = await db.from("products").select("product_name");
+    if (catalogueError) throw catalogueError;
+    // A photo taken from the brand's store listing (lib/engine/recheck.js) was
+    // chosen by matching, not handed over by the brand for this SKU, so its
+    // printed name has to name this product.
+    const { data: storeImages, error: storeError } = await engine
+      .from("source_images").select("id").eq("upload_id", upload.id).limit(1);
+    if (storeError) throw storeError;
     const context = {
       product: sku.products?.product_name ?? "",
       brand: sku.products?.brands?.brand_name ?? null,
       variant: sku.variant_name ?? null,
       netWeight: sku.net_weight ?? null,
+      others: catalogue.map((p) => p.product_name).filter((name) => name && name !== sku.products?.product_name),
+      fromStore: storeImages.length > 0,
     };
 
     const result = runChecks(parsed.data);
-    const plan = planAutoPublish({ reading: parsed.data, second: secondReading, result, sku: context });
+    let plan = planAutoPublish({ reading: parsed.data, second: secondReading, result, sku: context });
+
+    // Where the two readings differ, ask a third rather than a person. Each
+    // part of the label is settled on its own, and only what no set of readers
+    // agrees about still goes to the queue (agree.js). A part that reaches
+    // consensus publishes with the count that agreed, which is what lets a
+    // machine-read list say an allergen is absent (migration 00063).
+    let agreedParts = null;
+    if (plan.blocked.length && secondReading) {
+      const settled = await readUntilAgreed(image, {
+        readings: [
+          { by: primaryMeta.model, reading: parsed.data },
+          { by: otherMeta?.model ?? `${primaryMeta.model}-again`, reading: secondReading },
+        ],
+      });
+      agreedParts = settled.parts;
+      const stillOpen = plan.blocked.filter((b) => !agreedParts[b.group]?.agreed);
+      if (stillOpen.length !== plan.blocked.length) {
+        plan = {
+          ...plan,
+          blocked: stillOpen.map((b) => ({ ...b, reason: whyUnsettled(b.group, agreedParts[b.group]) ?? b.reason })),
+          agreement: { ...plan.agreement, consensus: Object.fromEntries(
+            Object.entries(agreedParts).map(([part, r]) => [part, { agreed: r.agreed, agreement: r.agreement, readings: r.readings, why: r.why }]),
+          ) },
+        };
+      }
+    }
 
     const { data: output, error: outputError } = await engine
       .from("extraction_outputs")
       .insert({
         job_id: job.id, upload_id: upload.id, sku_id: upload.sku_id,
-        model: first.value.model, prompt_version: PROMPT_VERSION,
+        model: primaryMeta.model, prompt_version: PROMPT_VERSION,
         extracted: parsed.data, checks: result.checks, confidence: result.confidence,
-        usage: { first: first.value.usage, second: second.status === "fulfilled" ? second.value.usage : null },
-        latency_ms: first.value.latencyMs,
-        second_read: secondReading, second_model: second.status === "fulfilled" ? second.value.model : null,
+        usage: { primary: primaryMeta.usage, second: otherMeta?.usage ?? null },
+        latency_ms: primaryMeta.latencyMs,
+        second_read: secondReading, second_model: otherMeta?.model ?? null,
         agreement: plan.agreement, blocked: plan.blocked,
       })
       .select("id")
@@ -119,6 +175,13 @@ export async function runExtraction(uploadId) {
       });
       if (publishError) throw publishError;
       published = data?.published ?? [];
+    }
+
+    // A published fact changes what KOI knows, so the KOI score is recomputed
+    // now rather than on some later pass. A scoring failure is logged, not
+    // thrown: the reading and the publish already succeeded.
+    if (published.length) {
+      await rescoreSkus([upload.sku_id]).catch((err) => console.error("[engine] rescore failed", err));
     }
 
     // Only what could not publish goes to the queue — for anyone who chooses
@@ -170,23 +233,56 @@ export async function runExtraction(uploadId) {
  */
 export async function runPending({ limit = 2 } = {}) {
   const db = engineDb();
+  const engine = db.schema("engine");
+  const results = [];
+
+  // Paused while the reader's configuration lacks a passing evaluation:
+  // uploads and re-reads wait, and no model credit is spent.
+  const gate = await evaluationGate(engine);
+  if (!gate.open) return { attempted: 0, remaining: null, paused: gate.reason, results };
+
+  // Re-reads first: a product an independent source contradicted
+  // (lib/off/crosscheck.js) matters more than a photo nobody has doubted.
+  const { data: rereads, error: rereadError } = await engine
+    .from("reread_requests").select("id, upload_id").is("done_at", null)
+    .order("requested_at", { ascending: true }).limit(limit);
+  if (rereadError) throw rereadError;
+  for (const request of rereads) {
+    let update;
+    try {
+      const out = await runExtraction(request.upload_id, { gate });
+      update = { output_id: out.outputId, result: { published: out.published, blocked: (out.blocked || []).map((b) => b.group) } };
+      results.push({ uploadId: request.upload_id, reread: true, ...out });
+    } catch (err) {
+      const message = String(err?.message || err).slice(0, 200);
+      update = { result: { error: message } };
+      results.push({ uploadId: request.upload_id, reread: true, error: message });
+    }
+    const { error: doneError } = await engine
+      .from("reread_requests").update({ ...update, done_at: new Date().toISOString() }).eq("id", request.id);
+    if (doneError) throw doneError;
+  }
+
   const [{ data: uploads, error: e1 }, { data: jobs, error: e2 }] = await Promise.all([
     db.from("uploads").select("id").in("file_type", LABEL_FILE_TYPES).eq("is_deleted", false)
       .not("sku_id", "is", null).order("uploaded_at", { ascending: true }),
-    db.schema("engine").from("ai_extraction_jobs").select("upload_id"),
+    engine.from("ai_extraction_jobs").select("upload_id"),
   ]);
   if (e1 || e2) throw e1 || e2;
 
   const attempted = new Set(jobs.map((j) => j.upload_id));
-  const todo = uploads.filter((u) => !attempted.has(u.id)).slice(0, limit);
+  const todo = uploads.filter((u) => !attempted.has(u.id)).slice(0, Math.max(0, limit - rereads.length));
 
-  const results = [];
   for (const u of todo) {
     try {
-      results.push({ uploadId: u.id, ...(await runExtraction(u.id)) });
+      results.push({ uploadId: u.id, ...(await runExtraction(u.id, { gate })) });
     } catch (err) {
       results.push({ uploadId: u.id, error: String(err?.message || err).slice(0, 200) });
     }
   }
-  return { attempted: todo.length, remaining: uploads.filter((u) => !attempted.has(u.id)).length - todo.length, results };
+  return {
+    attempted: rereads.length + todo.length,
+    remaining: uploads.filter((u) => !attempted.has(u.id)).length - todo.length,
+    results,
+  };
 }
